@@ -1,10 +1,10 @@
 #![feature(get_many_mut)]
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
-mod rox2d;
+use rox2d::rox2d::*;
 
 #[derive(Debug, Resource)]
 struct World {
-    inner: rox2d::world::World,
+    inner: rox2d::World,
 }
 #[derive(Debug, Component)]
 struct Body {
@@ -13,8 +13,7 @@ struct Body {
 
 impl Default for World {
     fn default() -> Self {
-        let world =
-            rox2d::world::World::new(rox2d::math::Vec2::new(0.0, -9.81), 5);
+        let world = rox2d::World::new(rox2d::Vec2::new(0.0, -9.81), 5);
 
         Self { inner: world }
     }
@@ -41,7 +40,7 @@ fn setup(
     commands.spawn(SpriteBundle {
         sprite: Sprite {
             color: Color::rgb(0.25, 0.25, 0.75),
-            custom_size: Some(Vec2::new(50.0, 100.0)),
+            custom_size: Some(bevy::prelude::Vec2::new(50.0, 100.0)),
             ..default()
         },
         ..default()

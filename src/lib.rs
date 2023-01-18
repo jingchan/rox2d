@@ -1,13 +1,7 @@
 #![feature(get_many_mut)]
-pub mod rox2d {
-    pub mod arbiter;
-    pub mod body;
-    pub mod collide;
-    pub mod joint;
-    pub mod math;
-    pub mod world;
 
-    pub use body::*;
-    pub use math::*;
-    pub use world::*;
-}
+pub mod rox2d;
+
+pub use rox2d::body::*;
+pub use rox2d::math::*;
+pub use rox2d::world::*;
