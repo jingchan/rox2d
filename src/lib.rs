@@ -1,3 +1,4 @@
+#![feature(get_many_mut)]
 pub mod rox2d {
     pub mod arbiter;
     pub mod body;

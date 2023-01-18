@@ -3,13 +3,15 @@ name = "rox2d"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "rox2d"
 
 [dependencies]
-bevy = "0.9.1"
 glam = "0.22.0"
 rand = "0.8.5"
 
+[dev-dependencies]
+bevy = "0.9.1"
 
 [profile.dev.package."*"]
 # Set optimization level for dependencies to 3
