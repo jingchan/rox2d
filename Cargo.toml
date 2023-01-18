@@ -2,6 +2,9 @@
 name = "rox2d"
 version = "0.1.0"
 edition = "2021"
+categories = ["game-engines", "physics-engines", "physics"]
+description = "A simple 2D physics engine heaviliy inspired by (the venerable) Box2D physics engine."
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "rox2d"
