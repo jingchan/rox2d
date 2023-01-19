@@ -26,16 +26,20 @@ pub struct Body {
     /// The rotational inertia of a body is the tendency of that body to resist
     /// changes in its rotational motion. This is the rotational equivalent of
     /// mass.
-    moment_of_inertia: f32,
+    inertia: f32,
 
     /// Inverse moment of inertia (I^-1)
-    pub inv_moment_of_inertia: f32,
+    pub inv_inertia: f32,
+
+    pub gravity_scale: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
 }
 
 impl Body {
     #[inline(always)]
     pub fn new(size: Vec2, mass: f32) -> Self {
-        let moment_of_inertia = if mass.is_finite() {
+        let inertia = if mass.is_finite() {
             mass * size.dot(size) / 12.0
         } else {
             f32::INFINITY
@@ -45,8 +49,8 @@ impl Body {
             size,
             mass,
             inv_mass: mass.recip(),
-            moment_of_inertia,
-            inv_moment_of_inertia: moment_of_inertia.recip(),
+            inertia,
+            inv_inertia: inertia.recip(),
             ..Default::default()
         }
     }
@@ -72,8 +76,13 @@ impl Default for Body {
             friction: 0.2,
             mass: f32::INFINITY,
             inv_mass: 0.0,
-            moment_of_inertia: f32::INFINITY,
-            inv_moment_of_inertia: 0.0,
+
+            inertia: f32::INFINITY,
+            inv_inertia: 0.0,
+
+            gravity_scale: 1.0,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
         }
     }
 }

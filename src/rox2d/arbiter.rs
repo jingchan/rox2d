@@ -36,18 +36,6 @@ pub struct Arbiter {
     pub friction: f32,
 }
 
-// // This is used by std::set
-// inline bool operator < (const ArbiterKey& a1, const ArbiterKey& a2)
-// {
-// 	if (a1.body1 < a2.body1)
-// 		return true;
-
-// 	if (a1.body1 == a2.body1 && a1.body2 < a2.body2)
-// 		return true;
-
-// 	return false;
-// }
-
 impl Arbiter {
     pub fn new(body1: &Body, body2: &Body) -> Self {
         let (body1, body2) = if body1 < body2 {
@@ -86,9 +74,9 @@ impl Arbiter {
             }
 
             if let Some(k) = k {
-                let mut c = merged_contacts[i];
+                let mut c = &mut merged_contacts[i];
                 let c_old = self.contacts[k];
-                c = c_new;
+                *c = c_new;
                 if world::World::WARM_STARTING {
                     c.accumulated_impulse_normal =
                         c_old.accumulated_impulse_normal;
@@ -134,8 +122,8 @@ impl Arbiter {
             let rn1 = r1.dot(c.normal);
             let rn2 = r2.dot(c.normal);
             let mut k_normal = body1.inv_mass + body2.inv_mass;
-            k_normal += body1.inv_moment_of_inertia * (r1.dot(r1) - rn1 * rn1)
-                + body2.inv_moment_of_inertia * (r2.dot(r2) - rn2 * rn2);
+            k_normal += body1.inv_inertia * (r1.dot(r1) - rn1 * rn1)
+                + body2.inv_inertia * (r2.dot(r2) - rn2 * rn2);
 
             c.mass_normal = 1.0 / k_normal;
 
@@ -143,8 +131,8 @@ impl Arbiter {
             let rt1 = r1.dot(tangent);
             let rt2 = r2.dot(tangent);
             let mut k_tangent = body1.inv_mass + body2.inv_mass;
-            k_tangent += body1.inv_moment_of_inertia * (r1.dot(r1) - rt1 * rt1)
-                + body2.inv_moment_of_inertia * (r2.dot(r2) - rt2 * rt2);
+            k_tangent += body1.inv_inertia * (r1.dot(r1) - rt1 * rt1)
+                + body2.inv_inertia * (r2.dot(r2) - rt2 * rt2);
             c.mass_tangent = 1.0 / k_tangent;
 
             c.bias = -bias_factor
@@ -159,11 +147,11 @@ impl Arbiter {
 
                 body1.velocity -= body1.inv_mass * accumulated_impulse;
                 body1.angular_velocity -=
-                    body1.inv_moment_of_inertia * r1.cross(accumulated_impulse);
+                    body1.inv_inertia * r1.cross(accumulated_impulse);
 
                 body2.velocity += body2.inv_mass * accumulated_impulse;
                 body2.angular_velocity +=
-                    body2.inv_moment_of_inertia * r2.cross(accumulated_impulse);
+                    body2.inv_inertia * r2.cross(accumulated_impulse);
             }
         }
     }
@@ -200,12 +188,12 @@ impl Arbiter {
             let accumulated_impulse_normal = impulse_normal * c.normal;
 
             body1.velocity -= body1.inv_mass * accumulated_impulse_normal;
-            body1.angular_velocity -= body1.inv_moment_of_inertia
-                * c.r1.cross(accumulated_impulse_normal);
+            body1.angular_velocity -=
+                body1.inv_inertia * c.r1.cross(accumulated_impulse_normal);
 
             body2.velocity += body2.inv_mass * accumulated_impulse_normal;
-            body2.angular_velocity += body2.inv_moment_of_inertia
-                * c.r2.cross(accumulated_impulse_normal);
+            body2.angular_velocity +=
+                body2.inv_inertia * c.r2.cross(accumulated_impulse_normal);
 
             // Relative velocity at contact
             let dv = body2.velocity
@@ -245,12 +233,12 @@ impl Arbiter {
             let accumulated_impulse_tangent = impulse_tangent * tangent;
 
             body1.velocity -= body1.inv_mass * accumulated_impulse_tangent;
-            body1.angular_velocity -= body1.inv_moment_of_inertia
-                * c.r1.cross(accumulated_impulse_tangent);
+            body1.angular_velocity -=
+                body1.inv_inertia * c.r1.cross(accumulated_impulse_tangent);
 
             body2.velocity += body2.inv_mass * accumulated_impulse_tangent;
-            body2.angular_velocity += body2.inv_moment_of_inertia
-                * c.r2.cross(accumulated_impulse_tangent);
+            body2.angular_velocity +=
+                body2.inv_inertia * c.r2.cross(accumulated_impulse_tangent);
         }
     }
 }

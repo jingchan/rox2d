@@ -11,9 +11,11 @@ struct Body {
     body_id: usize,
 }
 
+const NUM_ITERATIONS: usize = 5;
+
 impl Default for World {
     fn default() -> Self {
-        let world = rox2d::World::new(rox2d::Vec2::new(0.0, -9.81), 5);
+        let world = rox2d::World::new(rox2d::Vec2::new(0.0, -9.81));
 
         Self { inner: world }
     }
@@ -74,7 +76,7 @@ fn update(
     mut query: Query<(&mut Transform, &Body)>,
     mut world: ResMut<World>,
 ) {
-    world.inner.step(time.delta_seconds());
+    world.inner.step(time.delta_seconds(), NUM_ITERATIONS);
 
     for (mut transform, body) in &mut query {
         let body = world.inner.get_body(body.body_id).unwrap();

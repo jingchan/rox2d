@@ -72,8 +72,8 @@ impl Joint {
         //        [    0     1/m1+1/m2]
         //        [-r1.x*r1.y r1.x*r1.x]
         //        [-r1.x*r1.y r1.x*r1.x]
-        let body1_inv_i = body1.inv_moment_of_inertia;
-        let body2_inv_i = body2.inv_moment_of_inertia;
+        let body1_inv_i = body1.inv_inertia;
+        let body2_inv_i = body2.inv_inertia;
         let k1 = Mat2x2::new(
             body1.inv_mass + body2.inv_mass,
             0.0,
@@ -109,12 +109,12 @@ impl Joint {
         if World::WARM_STARTING {
             // Apply accumulated impulse.
             body1.velocity -= body1.inv_mass * self.accumulated_impulse;
-            body1.angular_velocity -= body1.inv_moment_of_inertia
-                * self.r1.cross(self.accumulated_impulse);
+            body1.angular_velocity -=
+                body1.inv_inertia * self.r1.cross(self.accumulated_impulse);
 
             body2.velocity += body2.inv_mass * self.accumulated_impulse;
-            body2.angular_velocity += body2.inv_moment_of_inertia
-                * self.r2.cross(self.accumulated_impulse);
+            body2.angular_velocity +=
+                body2.inv_inertia * self.r2.cross(self.accumulated_impulse);
         } else {
             self.accumulated_impulse = Vec2::ZERO;
         }
@@ -130,12 +130,10 @@ impl Joint {
             * (-dv - self.bias - self.softness * self.accumulated_impulse);
 
         body1.velocity -= body1.inv_mass * impulse;
-        body1.angular_velocity -=
-            body1.inv_moment_of_inertia * self.r1.cross(impulse);
+        body1.angular_velocity -= body1.inv_inertia * self.r1.cross(impulse);
 
         body2.velocity += body2.inv_mass * impulse;
-        body2.angular_velocity +=
-            body2.inv_moment_of_inertia * self.r2.cross(impulse);
+        body2.angular_velocity += body2.inv_inertia * self.r2.cross(impulse);
 
         self.accumulated_impulse += impulse;
     }

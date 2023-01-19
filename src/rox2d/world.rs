@@ -13,7 +13,6 @@ pub struct World {
     pub joints: Vec<(usize, usize, Joint)>,
     pub arbiters: HashMap<ArbiterKey, Arbiter>,
     pub gravity: Vec2,
-    pub iterations: i32,
 }
 
 impl World {
@@ -21,13 +20,12 @@ impl World {
     pub const WARM_STARTING: bool = true;
     pub const POSITION_CORRECTION: bool = true;
 
-    pub fn new(gravity: Vec2, iterations: i32) -> World {
+    pub fn new(gravity: Vec2) -> World {
         World {
             bodies: Vec::new(),
             joints: Vec::new(),
             arbiters: HashMap::new(),
             gravity: gravity,
-            iterations: iterations,
         }
     }
 
@@ -38,12 +36,30 @@ impl World {
         id
     }
 
+    /// TODO: Take a body definition instead of a body.
+    pub fn create_body(&mut self, size: Vec2, mass: f32) -> usize {
+        let body = Body::new(size, mass);
+        self.add_body(body)
+    }
+
+    pub fn destroy_body(&mut self, body_id: usize) {
+        self.bodies.remove(body_id);
+
+        // TODO: Iteratively destroy all joints, contacts, and fixtures and bodies attached to the body.
+    }
+
     pub fn get_body(&mut self, body_id: usize) -> Option<&Body> {
         self.bodies.get(body_id)
     }
 
-    pub fn add_joint(&mut self, body1: usize, body2: usize, joint: Joint) {
+    /// TODO: Take a joint definition instead of a joint.
+    pub fn create_joint(&mut self, body1: usize, body2: usize, joint: Joint) {
         self.joints.push((body1, body2, joint));
+    }
+
+    /// TODO:
+    pub fn destroy_joint(joint: &Joint) {
+        todo!()
     }
 
     pub fn clear(&mut self) {
@@ -80,7 +96,14 @@ impl World {
         }
     }
 
-    pub fn step(&mut self, dt: f32) {
+    /// TODO: Separate velocity and position interation.
+    pub fn step(&mut self, dt: f32, iterations: usize) {
+        // If new fixtures were added, we need to find the new contacts.
+        // if (self.has_new_contacts) {
+        //     self.contact_manager.find_new_contacts();
+        //     self.has_new_contacts = false;
+        // }
+
         let inv_dt = if dt > 0.0 { 1.0 / dt } else { 0.0 };
 
         // Determine overlapping bodies and update contact points.
@@ -93,8 +116,7 @@ impl World {
             }
 
             body.velocity += (self.gravity + body.inv_mass * body.force) * dt;
-            body.angular_velocity +=
-                body.inv_moment_of_inertia * body.torque * dt;
+            body.angular_velocity += body.inv_inertia * body.torque * dt;
         }
 
         // Perform pre-steps.
@@ -111,7 +133,7 @@ impl World {
         }
 
         // Perform iterations
-        for _ in 0..self.iterations {
+        for _ in 0..iterations {
             for (key, arb) in self.arbiters.iter_mut() {
                 let [body1, body2] =
                     self.bodies.get_many_mut([key.body1, key.body2]).unwrap();
@@ -133,5 +155,8 @@ impl World {
             body.force = Vec2::ZERO;
             body.torque = 0.0;
         }
+    }
+    fn clear_forces() {
+        todo!()
     }
 }

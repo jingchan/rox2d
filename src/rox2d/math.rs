@@ -216,6 +216,14 @@ impl MulAssign for Vec2 {
     }
 }
 
+impl MulAssign<f32> for Vec2 {
+    #[inline]
+    fn mul_assign(&mut self, other: f32) {
+        self.x *= other;
+        self.y *= other;
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Mat2x2 {
     pub col1: Vec2,
