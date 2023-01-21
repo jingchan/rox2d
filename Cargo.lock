@@ -2495,6 +2495,7 @@ name = "rox2d"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bitflags",
  "glam",
  "rand",
 ]

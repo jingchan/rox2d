@@ -1,7 +1,14 @@
 #![feature(get_many_mut)]
 
+pub mod common;
+
+#[cfg(not(feature = "use-mini"))]
 pub mod rox2d;
 
-pub use rox2d::body::*;
-pub use rox2d::math::*;
-pub use rox2d::world::*;
+#[cfg(feature = "use-mini")]
+pub mod rox2d_mini;
+
+pub use common::*;
+// pub use rox2d_mini::body::*;
+// pub use rox2d_mini::math::*;
+// pub use rox2d_mini::world::*;

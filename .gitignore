@@ -1,3 +1,4 @@
 /target
-/references
 tags
+references/*
+!references/box2d

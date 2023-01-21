@@ -5,40 +5,14 @@ use super::{
     body::Body,
     joint::Joint,
     math::Vec2,
-    BodyDef,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct World {
-    // block_allocator: BlockAllocator,
-    // stack_allocator: StackAllocator,
-    // contact_manager: ContactManager,
-    bodies: Vec<Body>,
-    joints: Vec<Joint>,
-
-    gravity: Vec2,
-    allow_sleep: bool,
-
-    // destruction_listener: Option<DestructionListener>,
-    // debug_draw: Option<DebugDraw>,
-
-    // This is used to compute the time step ratio to
-    // support a variable time step.
-    inv_dt0: f32,
-
-    new_contacts: bool,
-    locked: bool,
-    clear_forces: bool,
-
-    // These are for debugging the solver.
-    warm_starting: bool,
-    continuous_physics: bool,
-    sub_stepping: bool,
-
-    step_complete: bool,
-
-    // profile: Profile,
-    body_count: usize,
+    pub bodies: Vec<Body>,
+    pub joints: Vec<(usize, usize, Joint)>,
+    pub arbiters: HashMap<ArbiterKey, Arbiter>,
+    pub gravity: Vec2,
 }
 
 impl World {
@@ -46,18 +20,26 @@ impl World {
     pub const WARM_STARTING: bool = true;
     pub const POSITION_CORRECTION: bool = true;
 
-    pub fn new(gravity: Vec2) -> World {}
+    pub fn new(gravity: Vec2) -> World {
+        World {
+            bodies: Vec::new(),
+            joints: Vec::new(),
+            arbiters: HashMap::new(),
+            gravity: gravity,
+        }
+    }
 
-    fn create_body(&self, def: &BodyDef) -> usize {
-        let body_id = self.body_count;
-
-        let body = Body::new(def);
-        body.id = body_id;
-
+    pub fn add_body(&mut self, mut body: Body) -> usize {
+        let id = self.bodies.len();
+        body.id = id;
         self.bodies.push(body);
-        self.body_count += 1;
+        id
+    }
 
-        body_id
+    /// TODO: Take a body definition instead of a body.
+    pub fn create_body(&mut self, size: Vec2, mass: f32) -> usize {
+        let body = Body::new(size, mass);
+        self.add_body(body)
     }
 
     pub fn destroy_body(&mut self, body_id: usize) {
@@ -176,38 +158,5 @@ impl World {
     }
     fn clear_forces() {
         todo!()
-    }
-}
-
-impl Default for World {
-    fn default() -> Self {
-        Self {
-            destruction_listener: None,
-            debug_draw: None,
-
-            bodies: Vec::new(),
-            joints: Vec::new(),
-
-            warm_starting: true,
-            continuous_physics: true,
-            sub_stepping: false,
-
-            step_complete: true,
-
-            allow_sleep: true,
-            gravity: Vec2::ZERO,
-
-            new_contacts: false,
-            locked: false,
-            clear_forces: true,
-
-            inv_dt0: 0.0,
-
-            block_allocator: BlockAllocator::new(),
-
-            profile: Profile::default(),
-
-            body_count: 0,
-        }
     }
 }
