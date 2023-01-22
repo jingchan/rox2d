@@ -1,17 +1,20 @@
+use std::rc::Rc;
+
 use super::{collision::Manifold, fixture::Fixture, Body};
 
+#[derive(Debug, Clone)]
 pub struct ContactEdge {
-    other: Body,
-    contact: Contact,
-    prev: Option<Box<ContactEdge>>,
-    next: Option<Box<ContactEdge>>,
+    other: Rc<Body>,
+    contact: Rc<Contact>,
+    prev: Option<Rc<ContactEdge>>,
+    next: Option<Rc<ContactEdge>>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Contact {
     flags: u32,
-    prev: Option<Box<Contact>>,
-    next: Option<Box<Contact>>,
+    prev: Option<Rc<Contact>>,
+    next: Option<Rc<Contact>>,
 
     node_a: ContactEdge,
     node_b: ContactEdge,
@@ -37,7 +40,7 @@ pub struct Contact {
 impl Contact {
     /// Get the contact manifold. Do not modify the manifold unless you understand the
     /// internals of Box2D.
-    pub fn get_maniforld(&self) -> &Manifold {
+    pub fn get_manifold(&self) -> &Manifold {
         &self.manifold
     }
 }

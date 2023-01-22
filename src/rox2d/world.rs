@@ -1,12 +1,4 @@
-use std::collections::HashMap;
-
-use super::{
-    arbiter::{Arbiter, ArbiterKey},
-    body::Body,
-    joint::Joint,
-    math::Vec2,
-    BodyDef,
-};
+use super::{body::Body, joint::Joint, math::Vec2, BodyDef};
 
 #[derive(Debug, Clone)]
 pub struct World {
@@ -203,10 +195,9 @@ impl Default for World {
 
             inv_dt0: 0.0,
 
-            block_allocator: BlockAllocator::new(),
+            // block_allocator: BlockAllocator::new(),
 
-            profile: Profile::default(),
-
+            // profile: Profile::default(),
             body_count: 0,
         }
     }

@@ -429,33 +429,34 @@ impl Rot {
             c: self.c,
         }
     }
-
-    // /// Rotate a vector
-    // pub fn mul_vec2(&self, v: Vec2) -> Vec2 {
-    //     Vec2::new(self.c * v.x - self.s * v.y, self.s * v.x + self.c * v.y)
-    // }
-
-    // /// Rotate a vector
-    // pub fn mul_t_vec2(&self, v: Vec2) -> Vec2 {
-    //     Vec2::new(self.c * v.x + self.s * v.y, -self.s * v.x + self.c * v.y)
-    // }
-
-    // /// Multiply two rotations: q * r
-    // pub fn mul(&self, r: Self) -> Self {
-    //     Self {
-    //         s: self.s * r.c + self.c * r.s,
-    //         c: self.c * r.c - self.s * r.s,
-    //     }
-    // }
-
-    // /// Multiply two rotations: q * r
-    // pub fn mul_t(&self, r: Self) -> Self {
-    //     Self {
-    //         s: self.s * r.c - self.c * r.s,
-    //         c: self.c * r.c + self.s * r.s,
-    //     }
-    // }
 }
+
+impl Mul for Rot {
+    type Output = Self;
+    #[inline]
+    fn mul(self, other: Self) -> Self {
+        Self {
+            s: self.s * other.c + self.c * other.s,
+            c: self.c * other.c - self.s * other.s,
+        }
+    }
+}
+
+impl Mul<Vec2> for Rot {
+    type Output = Vec2;
+    #[inline]
+    fn mul(self, other: Vec2) -> Vec2 {
+        Vec2 {
+            x: self.c * other.x - self.s * other.y,
+            y: self.s * other.x + self.c * other.y,
+        }
+    }
+}
+
+// /// Rotate a vector
+// pub fn mul_t_vec2(&self, v: Vec2) -> Vec2 {
+//     Vec2::new(self.c * v.x + self.s * v.y, -self.s * v.x + self.c * v.y)
+// }
 
 impl Default for Rot {
     #[inline(always)]
@@ -472,11 +473,69 @@ pub struct Transform {
     pub q: Rot,
 }
 
+impl Transform {
+    /// Set this based on the position and angle.
+    #[inline(always)]
+    pub fn new(p: Vec2, angle: f32) -> Self {
+        Self {
+            p,
+            q: Rot::new(angle),
+        }
+    }
+
+    /// Get the angle in radians.
+    #[inline]
+    pub fn get_angle(&self) -> f32 {
+        self.q.get_angle()
+    }
+
+    /// Get the inverse of this transform: q' * p' = p * q
+    #[inline]
+    pub fn get_inverse(&self) -> Self {
+        let q_inv = self.q.get_inverse();
+        Self {
+            p: q_inv * -self.p,
+            q: q_inv,
+        }
+    }
+
+    /// Multiply a vector by this matrix.
+    #[inline]
+    pub fn mul_vec2(&self, v: Vec2) -> Vec2 {
+        self.q * v + self.p
+    }
+
+    /// Multiply a vector by the inverse of this matrix.
+    #[inline]
+    pub fn mul_t_vec2(&self, v: Vec2) -> Vec2 {
+        self.q.mul_t_vec2(v - self.p)
+    }
+
+    /// Multiply a matrix by this matrix.
+    #[inline]
+    pub fn mul(&self, t: Self) -> Self {
+        Self {
+            p: self.mul_vec2(t.p),
+            q: self.q * t.q,
+        }
+    }
+
+    /// Multiply a matrix by the inverse of this matrix.
+    #[inline]
+    pub fn mul_t(&self, t: Self) -> Self {
+        let q_inv = self.q.get_inverse();
+        Self {
+            p: q_inv * (t.p - self.p),
+            q: q_inv * t.q,
+        }
+    }
+}
+
 /// This describes the motion of a body/shape for TOI computation.
 /// Shapes are defined with respect to the body origin, which may
 /// no coincide with the center of mass. However, to support dynamics
 /// we must interpolate the center of mass position.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Sweep {
     /// Local center of mass position
     pub local_center: Vec2,
@@ -522,6 +581,20 @@ impl Sweep {
         let d = two_pi * (self.a0 / two_pi).floor();
         self.a0 -= d;
         self.a -= d;
+    }
+}
+
+impl Default for Sweep {
+    #[inline(always)]
+    fn default() -> Self {
+        Self {
+            local_center: Vec2::default(),
+            c0: Vec2::default(),
+            c: Vec2::default(),
+            a0: 0.0,
+            a: 0.0,
+            alpha0: 0.0,
+        }
     }
 }
 

@@ -6,135 +6,72 @@ use super::{
     world::World,
 };
 
-#[derive(Debug, Clone, Copy)]
-pub struct Joint {
-    /// Mass matrix (M)
-    mass_matrix: Mat2x2,
-
-    local_anchor1: Vec2,
-    local_anchor2: Vec2,
-
-    r1: Vec2,
-    r2: Vec2,
-    bias: Vec2,
-
-    /// Accumulated impulse (P)
-    accumulated_impulse: Vec2,
-    bias_factor: f32,
-    softness: f32,
+pub enum JointType {
+    Unknown,
+    Revolute,
+    Prismatic,
+    Distance,
+    Pulley,
+    Mouse,
+    Gear,
+    Wheel,
+    Weld,
+    Friction,
+    Rope,
+    Motor,
 }
 
-impl Joint {
-    pub fn new(body1: &mut Body, body2: &mut Body, anchor: Vec2) -> Self {
-        let rot1 = Mat2x2::from_angle(body1.rotation);
-        let rot2 = Mat2x2::from_angle(body2.rotation);
-        let rot1_t = rot1.transpose();
-        let rot2_t = rot2.transpose();
+pub struct Jacobian {
+    linear: Vec2,
+    angular1: f32,
+    angular2: f32,
+}
 
-        let local_anchor1 = rot1_t * (anchor - body1.position);
-        let local_anchor2 = rot2_t * (anchor - body2.position);
+/// A joint edge is used to connect bodies and joints together
+/// in a joint graph where each body is a node and each joint
+/// is an edge. A joint edge belongs to a doubly linked list
+/// maintained in each attached body. Each joint has two joint
+/// nodes, one for each attached body.
+#[derive(Debug, Clone)]
+pub struct JointEdge {
+    /// Provides quick access to the other body attached.
+    pub other: Rc<Body>,
+    /// The joint.
+    pub joint: Rc<Joint>,
+    /// The previous joint edge in the body's joint list.
+    pub prev: Option<Rc<JointEdge>>,
+    /// The next joint edge in the body's joint list.
+    pub next: Option<Rc<JointEdge>>,
+}
 
-        Self {
-            mass_matrix: Mat2x2::ZERO,
-            local_anchor1,
-            local_anchor2,
-            r1: Vec2::ZERO,
-            r2: Vec2::ZERO,
-            bias: Vec2::ZERO,
-            accumulated_impulse: Vec2::ZERO,
-            bias_factor: 0.2,
-            softness: 0.0,
-        }
-    }
+/// Joint definitions are used to construct joints.
+struct JointDef {
+    /// the joint type is set automatically for concrete joint types.
+    joint_type: JointType,
+    /// Use this to attach application specific data to your joints.
+    user_data: Option<Box<dyn std::any::Any>>,
+    /// The first attached body.
+    body1: Rc<Body>,
+    /// The second attached body.
+    body2: Rc<Body>,
+    /// Set this flag to true if the attached bodies should collide.
+    collide_connected: bool,
+}
 
-    pub fn pre_step(
-        &mut self,
-        body1: &mut Body,
-        body2: &mut Body,
-        inv_dt: f32,
-    ) {
-        // Pre-compute anchors, mass matrix, and bias.
-        let rot1 = Mat2x2::from_angle(body1.rotation);
-        let rot2 = Mat2x2::from_angle(body2.rotation);
+#[derive(Debug, Clone)]
+pub struct Joint {
+    pub joint_type: JointType,
+    pub prev: Option<Rc<Joint>>,
+    pub next: Option<Rc<Joint>>,
+    pub edge_a: JointEdge,
+    pub edge_b: JointEdge,
+    pub body_a: Rc<Body>,
+    pub body_b: Rc<Body>,
 
-        self.r1 = rot1 * self.local_anchor1;
-        self.r2 = rot2 * self.local_anchor2;
+    pub index: i32,
 
-        // deltaV = deltaV0 + K * impulse
-        // invM = [(1/m1 + 1/m2) * eye(2)
-        //         - skew(r1) * invI1 * skew(r1)
-        //         - skew(r2) * invI2 * skew(r2)]
-        //
-        //      = [1/m1+1/m2     0    ]
-        //         + invI1 * [r1.y*r1.y -r1.x*r1.y]
-        //         + invI2 * [r1.y*r1.y -r1.x*r1.y]
-        //
-        //        [    0     1/m1+1/m2]
-        //        [-r1.x*r1.y r1.x*r1.x]
-        //        [-r1.x*r1.y r1.x*r1.x]
-        let body1_inv_i = body1.inv_inertia;
-        let body2_inv_i = body2.inv_inertia;
-        let k1 = Mat2x2::new(
-            body1.inv_mass + body2.inv_mass,
-            0.0,
-            0.0,
-            body1.inv_mass + body2.inv_mass,
-        );
-        let k2 = Mat2x2::new(
-            body1_inv_i * self.r1.y * self.r1.y,
-            -body1_inv_i * self.r1.x * self.r1.y,
-            -body1_inv_i * self.r1.x * self.r1.y,
-            body1_inv_i * self.r1.x * self.r1.x,
-        );
-        let k3 = Mat2x2::new(
-            body2_inv_i * self.r2.y * self.r2.y,
-            -body2_inv_i * self.r2.x * self.r2.y,
-            -body2_inv_i * self.r2.x * self.r2.y,
-            body2_inv_i * self.r2.x * self.r2.x,
-        );
-        let k = k1 + k2 + k3 + Mat2x2::from_diag(Vec2::splat(self.softness));
+    pub island_flag: bool,
+    pub collide_connected: bool,
 
-        self.mass_matrix = k.invert();
-
-        let p1 = body1.position + self.r1;
-        let p2 = body2.position + self.r2;
-        let dp = p2 - p1;
-
-        if World::POSITION_CORRECTION {
-            self.bias = -self.bias_factor * inv_dt * dp;
-        } else {
-            self.bias = Vec2::ZERO;
-        }
-
-        if World::WARM_STARTING {
-            // Apply accumulated impulse.
-            body1.velocity -= body1.inv_mass * self.accumulated_impulse;
-            body1.angular_velocity -=
-                body1.inv_inertia * self.r1.cross(self.accumulated_impulse);
-
-            body2.velocity += body2.inv_mass * self.accumulated_impulse;
-            body2.angular_velocity +=
-                body2.inv_inertia * self.r2.cross(self.accumulated_impulse);
-        } else {
-            self.accumulated_impulse = Vec2::ZERO;
-        }
-    }
-
-    pub fn apply_impulse(&mut self, body1: &mut Body, body2: &mut Body) {
-        let dv = body2.velocity
-            + Vec2::scalar_cross(body2.angular_velocity, self.r2)
-            - body1.velocity
-            - Vec2::scalar_cross(body1.angular_velocity, self.r1);
-
-        let impulse = self.mass_matrix
-            * (-dv - self.bias - self.softness * self.accumulated_impulse);
-
-        body1.velocity -= body1.inv_mass * impulse;
-        body1.angular_velocity -= body1.inv_inertia * self.r1.cross(impulse);
-
-        body2.velocity += body2.inv_mass * impulse;
-        body2.angular_velocity += body2.inv_inertia * self.r2.cross(impulse);
-
-        self.accumulated_impulse += impulse;
-    }
+    pub user_data: Option<Box<dyn std::any::Any>>,
 }

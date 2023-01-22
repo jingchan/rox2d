@@ -1,8 +1,6 @@
 use std::any::Any;
 
-use super::shape::Shape;
-
-
+use super::{collision::Aabb, shape::Shape};
 
 const LENGTH_UNITS_PER_METER: f32 = 1.0;
 
@@ -32,7 +30,6 @@ impl Default for FixtureDef {
     }
 }
 
-
 #[derive(Debug, Default, Clone)]
 pub struct Fixture {
     pub shape: Shape,
@@ -44,7 +41,6 @@ pub struct Fixture {
     proxies: Vec<FixtureProxy>,
     pub(crate) proxy_count: usize,
 
-
     pub is_sensor: bool,
     pub filter: Filter,
 
@@ -52,13 +48,12 @@ pub struct Fixture {
 }
 
 /// This proxy is used internally to connect fixtures to the broad-phase.
-struct FixtureProxy
-{
-	aabb: Aabb,
-	fixture: Fixture,
-	child_index: usize,
-	proxy_id: usize,
-};
+struct FixtureProxy {
+    aabb: Aabb,
+    fixture: Fixture,
+    child_index: usize,
+    proxy_id: usize,
+}
 
 pub struct Filter {
     pub category_bits: u16,

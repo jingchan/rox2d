@@ -1,6 +1,4 @@
-use crate::Transform;
-
-use super::Vec2;
+use super::{Transform, Vec2};
 
 const MAX_MANIFOLD_POINTS: usize = 2;
 const MAX_POLYGON_VERTICES: usize = 8;
@@ -8,13 +6,13 @@ const MAX_POLYGON_VERTICES: usize = 8;
 
 /// The features that intersect to form the contact point
 /// This must be 4 bytes or less.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ContactFeatureType {
     Vertex,
     Face,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ContactFeature {
     /// Feature index on shapeA
     index_a: u8,
@@ -27,7 +25,7 @@ struct ContactFeature {
 }
 
 /// Contact ids to facilitate warm starting.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ContactId {
     /// Used to quickly compare contact ids.
     Key(u32),
@@ -45,19 +43,19 @@ enum ContactId {
 /// This structure is stored across time steps, so we keep it small.
 /// Note: the impulses are used for internal caching and may not
 /// provide reliable contact forces, especially for high speed collisions.
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy, Debug)]
 struct ManifoldPoint {
     /// Usage depends on manifold type.
     pub local_point: Vec2,
     /// The non-penetration impulse.
-    normal_impulse: f32,
+    pub normal_impulse: f32,
     /// The friction impulse.
-    tangent_impulse: f32,
+    pub tangent_impulse: f32,
     /// Uniquely identifies a contact point between two shapes.
     id: ContactId,
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum ManifoldType {
     #[default]
     Circles,
@@ -81,6 +79,7 @@ pub enum ManifoldType {
 /// account for movement, which is critical for continuous physics.
 /// All contact scenarios must be expressed in one of these types.
 /// This structure is stored across time steps, so we keep it small.
+#[derive(Clone, Debug)]
 pub struct Manifold {
     /// The points of contact.
     pub points: [ManifoldPoint; 2],
@@ -106,8 +105,8 @@ pub struct WorldManifold {
 impl WorldManifold {
     pub fn new() -> Self {
         Self {
-            normal: Vec2::zero(),
-            points: [Vec2::zero(); MAX_MANIFOLD_POINTS],
+            normal: Vec2::ZERO,
+            points: [Vec2::ZERO; MAX_MANIFOLD_POINTS],
             separations: [0.0; MAX_MANIFOLD_POINTS],
         }
     }
@@ -120,16 +119,15 @@ impl WorldManifold {
         radius_b: f32,
     ) -> Self {
         if manifold.point_count == 0 {
-            return;
+            panic!("Manifold point count is zero.")
         }
 
         match manifold.manifold_type {
             ManifoldType::Circles => {
                 let normal = Vec2::new(1.0, 0.0);
-                let point_a = Transform::mul_vec2(xf_a, manifold.local_point);
-                let point_b =
-                    Transform::mul_vec2(xf_b, manifold.points[0].local_point);
-                if Vec2::distance_squared(point_a, point_b)
+                let point_a = xf_a * manifold.local_point;
+                let point_b = xf_b * manifold.points[0].local_point;
+                if point_a.distance_squared(point_b)
                     > f32::EPSILON * f32::EPSILON
                 {
                     normal = point_b - point_a;
@@ -138,8 +136,8 @@ impl WorldManifold {
 
                 let c_a = point_a + radius_a * normal;
                 let c_b = point_b - radius_b * normal;
-                let points = [0.5 * (c_a + c_b)];
-                let separations = [Vec2::dot(c_b - c_a, normal)];
+                let points = [0.5 * (c_a + c_b), 0.0];
+                let separations = [Vec2::dot(c_b - c_a, normal), 0.0];
                 Self {
                     normal,
                     points,
@@ -160,12 +158,11 @@ impl WorldManifold {
                         manifold.points[i].local_point,
                     );
                     let c_a = clip_point
-                        + (radius_a
-                            - Vec2::dot(clip_point - plane_point, normal))
+                        + (radius_a - (clip_point - plane_point).dot(normal))
                             * normal;
                     let c_b = clip_point - radius_b * normal;
                     points[i] = 0.5 * (c_a + c_b);
-                    separations[i] = Vec2::dot(c_b - c_a, normal);
+                    separations[i] = (c_b - c_a).dot(normal);
                 }
                 Self {
                     normal,
@@ -187,12 +184,11 @@ impl WorldManifold {
                         manifold.points[i].local_point,
                     );
                     let c_b = clip_point
-                        + (radius_b
-                            - Vec2::dot(clip_point - plane_point, normal))
+                        + (radius_b - (clip_point - plane_point).dot(normal))
                             * normal;
                     let c_a = clip_point - radius_a * normal;
                     points[i] = 0.5 * (c_a + c_b);
-                    separations[i] = Vec2::dot(c_a - c_b, normal);
+                    separations[i] = (c_a - c_b).dot(normal);
                 }
 
                 // Ensure normal points from A to B.

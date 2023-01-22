@@ -1,4 +1,7 @@
-use crate::Transform;
+use crate::{
+    rox2d::common::{BAUMGARTE, LINEAR_SLOP, MAX_LINEAR_CORRECTION},
+    Rot, Transform,
+};
 
 use super::{
     collision::{Manifold, ManifoldType, WorldManifold},
@@ -143,6 +146,64 @@ impl ContactPositionConstraint {
     }
 }
 
+struct PositionSolverManifold {
+    normal: Vec2,
+    point: Vec2,
+    separation: f32,
+}
+
+impl PositionSolverManifold {
+    fn initialize(
+        &mut self,
+        pc: &ContactPositionConstraint,
+        xf_a: &Transform,
+        xf_b: &Transform,
+        index: i32,
+    ) {
+        assert!(pc.point_count > 0);
+
+        match pc.type_ {
+            ManifoldType::Circles => {
+                let point_a = Transform::mul_vec2(xf_a, pc.local_point);
+                let point_b = Transform::mul_vec2(xf_b, pc.local_points[0]);
+                let normal = (point_b - point_a).normalize();
+                self.normal = normal;
+                self.point = 0.5 * (point_a + point_b);
+                self.separation = (point_b - point_a).dot(self.normal)
+                    - pc.radius_a
+                    - pc.radius_b;
+            }
+
+            ManifoldType::FaceA => {
+                self.normal = Transform::mul_rot(xf_a.q, pc.local_normal);
+                let plane_point = Transform::mul_vec2(xf_a, pc.local_point);
+
+                let clip_point =
+                    Transform::mul_vec2(xf_b, pc.local_points[index]);
+                self.separation = (clip_point - plane_point).dot(self.normal)
+                    - pc.radius_a
+                    - pc.radius_b;
+                self.point = clip_point;
+            }
+
+            ManifoldType::FaceB => {
+                self.normal = Transform::mul_rot(xf_b.q, pc.local_normal);
+                let plane_point = Transform::mul_vec2(xf_b, pc.local_point);
+
+                let clip_point =
+                    Transform::mul_vec2(xf_a, pc.local_points[index]);
+                self.separation = (clip_point - plane_point).dot(self.normal)
+                    - pc.radius_a
+                    - pc.radius_b;
+                self.point = clip_point;
+
+                // Ensure normal points from A to B
+                self.normal = -self.normal;
+            }
+        }
+    }
+}
+
 pub struct ContactSolver {
     step: TimeStep,
     positions: Vec<Position>,
@@ -282,7 +343,7 @@ impl ContactSolver {
             }
 
             // If we have two points, then prepare the block solver.
-            if vc.point_count == 2 && self.step.block_solving {
+            if vc.point_count == 2 && BLOCK_SOLVE {
                 let vcp1 = vc.points[0];
                 let vcp2 = vc.points[1];
 
@@ -311,721 +372,505 @@ impl ContactSolver {
             }
         }
     }
+
+    pub fn warm_start(&mut self) {
+        // Warm start.
+        for i in 0..self.count {
+            let vc = &self.velocity_constraints[i];
+
+            let index_a = vc.index_a;
+            let index_b = vc.index_b;
+            let m_a = vc.inv_mass_a;
+            let i_a = vc.inv_inertia_a;
+            let m_b = vc.inv_mass_b;
+            let i_b = vc.inv_inertia_b;
+            let point_count = vc.point_count;
+
+            let mut v_a = self.velocities[index_a].v;
+            let mut w_a = self.velocities[index_a].w;
+            let mut v_b = self.velocities[index_b].v;
+            let mut w_b = self.velocities[index_b].w;
+
+            for j in 0..point_count {
+                let vcp = vc.points[j];
+                let P = vcp.normal_impulse * vc.normal
+                    + vcp.tangent_impulse * vc.normal.cross(1.0);
+                w_a -= i_a * vcp.r_a.cross(P);
+                v_a -= m_a * P;
+                w_b += i_b * vcp.r_b.cross(P);
+                v_b += m_b * P;
+            }
+
+            self.velocities[index_a].v = v_a;
+            self.velocities[index_a].w = w_a;
+            self.velocities[index_b].v = v_b;
+            self.velocities[index_b].w = w_b;
+        }
+    }
+
+    pub fn solve_velocity_constraints(&mut self) {
+        for i in 0..self.count {
+            let vc = &self.velocity_constraints[i];
+
+            let index_a = vc.index_a;
+            let index_b = vc.index_b;
+            let m_a = vc.inv_mass_a;
+            let i_a = vc.inv_inertia_a;
+            let m_b = vc.inv_mass_b;
+            let i_b = vc.inv_inertia_b;
+            let point_count = vc.point_count;
+
+            let mut v_a = self.velocities[index_a].v;
+            let mut w_a = self.velocities[index_a].w;
+            let mut v_b = self.velocities[index_b].v;
+            let mut w_b = self.velocities[index_b].w;
+
+            let tangent = vc.normal.cross(1.0);
+
+            // Solve tangent constraints first because non-penetration is more
+            // important than friction.
+            for j in 0..point_count {
+                let mut vcp = vc.points[j];
+
+                // Relative velocity at contact
+                let dv = v_b + w_b.cross(vcp.r_b) - v_a - w_a.cross(vcp.r_a);
+
+                // Compute tangent force
+                let vt = dv.dot(tangent) - vc.tangent_speed;
+                let lambda = vcp.tangent_mass * (-vt);
+
+                // b2Clamp the accumulated force
+                let max_friction = vc.friction * vcp.normal_impulse;
+                let new_impulse = (vcp.tangent_impulse + lambda)
+                    .clamp(-max_friction, max_friction);
+                lambda = new_impulse - vcp.tangent_impulse;
+                vcp.tangent_impulse = new_impulse;
+
+                // Apply contact impulse
+                let P = lambda * vc.tangent;
+
+                v_a -= m_a * P;
+                w_a -= i_a * vcp.r_a.cross(P);
+
+                v_b += m_b * P;
+                w_b += i_b * vcp.r_b.cross(P);
+            }
+
+            // Solve normal constraints
+            if vc.point_count == 1 || !BLOCK_SOLVE {
+                for j in 0..point_count {
+                    let mut vcp = vc.points[j];
+
+                    // Relative velocity at contact
+                    let dv =
+                        v_b + w_b.cross(vcp.r_b) - v_a - w_a.cross(vcp.r_a);
+
+                    // Compute normal impulse
+                    let vn = dv.dot(vc.normal);
+                    let mut lambda =
+                        -vcp.normal_mass * (vn - vcp.velocity_bias);
+
+                    // b2Clamp the accumulated impulse
+                    let new_impulse = (vcp.normal_impulse + lambda).max(0.0);
+                    lambda = new_impulse - vcp.normal_impulse;
+                    vcp.normal_impulse = new_impulse;
+
+                    // Apply contact impulse
+                    let P = lambda * vc.normal;
+
+                    v_a -= m_a * P;
+                    w_a -= i_a * vcp.r_a.cross(P);
+
+                    v_b += m_b * P;
+                    w_b += i_b * vcp.r_b.cross(P);
+                }
+            } else {
+                // Block solver developed in collaboration with Dirk Gregorius
+                // (back in 01/07 on Box2D_Lite).  Build the mini LCP for this
+                // contact patch
+                //
+                // vn = A * x + b, vn >= 0, x >= 0 and vn_i * x_i = 0 with i =
+                // 1..2
+                //
+                // A = J * W * JT and J = ( -n, -r1 x n, n, r2 x n ) b = vn0 -
+                // velocityBias
+                //
+                // The system is solved using the "Total enumeration method" (s.
+                // Murty). The complementary constraint vn_i * x_i implies that
+                // we must have in any solution either vn_i = 0 or x_i = 0. So
+                // for the 2D contact problem the cases vn_1 = 0 and x_1 = 0 or
+                // vn_2 = 0 and x_2 = 0, x_1 = 0 and vn_2 = 0 and vn_1 = 0 need
+                // to be tested. The first valid solution that satisfies the
+                // problem is chosen.
+                //
+                // In order to account of the accumulated impulse 'a' (because
+                // of the iterative nature of the solver which only requires
+                // that the accumulated impulse is clamped and not the
+                // incremental impulse) we change the impulse variable (x_i).
+                //
+                // Substitute:
+                //
+                // x = a + d
+                //
+                // a := old total impulse
+                // x := new total impulse
+                // d := incremental impulse
+                //
+                // For the current iteration we extend the formula for the
+                // incremental impulse
+                // to compute the new total impulse:
+                //
+                // vn = A * d + b
+                //    = A * (x - a) + b
+                //    = A * x + b - A * a
+                //    = A * x + b'
+                // b' = b - A * a;
+
+                let mut cp1 = vc.points[0];
+                let mut cp2 = vc.points[1];
+
+                let a = Vec2::new(cp1.normal_impulse, cp2.normal_impulse);
+                debug_assert!(a.x >= 0.0 && a.y >= 0.0);
+
+                // Relative velocity at contact
+                let dv1 = v_b + w_b.cross(cp1.r_b) - v_a - w_a.cross(cp1.r_a);
+                let dv2 = v_b + w_b.cross(cp2.r_b) - v_a - w_a.cross(cp2.r_a);
+
+                // Compute normal velocity
+                let vn1 = dv1.dot(vc.normal);
+                let vn2 = dv2.dot(vc.normal);
+
+                let mut b =
+                    Vec2::new(vn1 - cp1.velocity_bias, vn2 - cp2.velocity_bias);
+
+                // Compute b'
+                b -= vc.k * a;
+
+                loop {
+                    //
+                    // Case 1: vn = 0
+                    //
+                    // 0 = A * x + b'
+                    //
+                    // Solve for x:
+                    //
+                    // x = - inv(A) * b'
+                    //
+                    let x = -vc.normal_mass * b;
+
+                    if x.x >= 0.0 && x.y >= 0.0 {
+                        // Get the incremental impulse
+                        let d = x - a;
+
+                        // Apply incremental impulse
+                        let P1 = d.x * vc.normal;
+                        let P2 = d.y * vc.normal;
+                        v_a -= m_a * (P1 + P2);
+                        w_a -= i_a * (cp1.r_a.cross(P1) + cp2.r_a.cross(P2));
+
+                        v_b += m_b * (P1 + P2);
+                        w_b += i_b * (cp1.r_b.cross(P1) + cp2.r_b.cross(P2));
+
+                        // Accumulate
+                        cp1.normal_impulse = x.x;
+                        cp2.normal_impulse = x.y;
+
+                        break;
+                    }
+
+                    //
+                    // Case 2: vn1 = 0 and x2 = 0
+                    //
+                    //   0 = a11 * x1 + a12 * 0 + b1'
+                    // vn2 = a21 * x1 + a22 * 0 + b2'
+                    //
+                    x.x = -cp1.normal_mass * b.x;
+                    x.y = 0.0;
+                    vn1 = 0.0;
+                    vn2 = vc.k.ex.y * x.x + b.y;
+
+                    if x.x >= 0.0 && vn2 >= 0.0 {
+                        // Get the incremental impulse
+                        let d = x - a;
+
+                        // Apply incremental impulse
+                        let P1 = d.x * vc.normal;
+                        let P2 = d.y * vc.normal;
+                        v_a -= m_a * (P1 + P2);
+                        w_a -= i_a * (cp1.r_a.cross(P1) + cp2.r_a.cross(P2));
+
+                        v_b += m_b * (P1 + P2);
+                        w_b += i_b * (cp1.r_b.cross(P1) + cp2.r_b.cross(P2));
+
+                        // Accumulate
+                        cp1.normal_impulse = x.x;
+                        cp2.normal_impulse = x.y;
+
+                        break;
+                    }
+
+                    //
+                    // Case 3: vn2 = 0 and x1 = 0
+                    //
+                    // vn1 = a11 * 0 + a12 * x2 + b1'
+                    //   0 = a21 * 0 + a22 * x2 + b2'
+                    //
+                    x.x = 0.0;
+                    x.y = -cp2.normal_mass * b.y;
+                    vn1 = vc.k.ey.x * x.y + b.x;
+                    vn2 = 0.0;
+
+                    if x.y >= 0.0 && vn1 >= 0.0 {
+                        // Resubstitute for the incremental impulse
+                        let d = x - a;
+
+                        // Apply incremental impulse
+                        let P1 = d.x * vc.normal;
+                        let P2 = d.y * vc.normal;
+                        v_a -= m_a * (P1 + P2);
+                        w_a -= i_a * (cp1.r_a.cross(P1) + cp2.r_a.cross(P2));
+
+                        v_b += m_b * (P1 + P2);
+                        w_b += i_b * (cp1.r_b.cross(P1) + cp2.r_b.cross(P2));
+
+                        // Accumulate
+                        cp1.normal_impulse = x.x;
+                        cp2.normal_impulse = x.y;
+
+                        break;
+                    }
+
+                    //
+                    // Case 4: x1 = 0 and x2 = 0
+                    //
+                    // vn1 = b1
+                    // vn2 = b2;
+                    x.x = 0.0;
+                    x.y = 0.0;
+                    vn1 = b.x;
+                    vn2 = b.y;
+
+                    if vn1 >= 0.0 && vn2 >= 0.0 {
+                        // Resubstitute for the incremental impulse
+                        let d = x - a;
+
+                        // Apply incremental impulse
+                        let P1 = d.x * vc.normal;
+                        let P2 = d.y * vc.normal;
+                        v_a -= m_a * (P1 + P2);
+                        w_a -= i_a * (cp1.r_a.cross(P1) + cp2.r_a.cross(P2));
+
+                        v_b += m_b * (P1 + P2);
+                        w_b += i_b * (cp1.r_b.cross(P1) + cp2.r_b.cross(P2));
+
+                        // Accumulate
+                        cp1.normal_impulse = x.x;
+                        cp2.normal_impulse = x.y;
+
+                        break;
+                    }
+
+                    // No solution, give up. This is hit sometimes, but it doesn't seem to matter.
+                    break;
+                }
+            }
+
+            self.velocities[index_a].v = v_a;
+            self.velocities[index_a].w = w_a;
+            self.velocities[index_b].v = v_b;
+            self.velocities[index_b].w = w_b;
+        }
+    }
+
+    pub fn store_impulses(&mut self) {
+        for i in 0..self.count {
+            let vc = &self.velocity_constraints[i];
+            let manifold = self.contacts[vc.contact_index].get_manifold();
+
+            for j in 0..vc.point_count {
+                manifold.points[j].normal_impulse = vc.points[j].normal_impulse;
+                manifold.points[j].tangent_impulse =
+                    vc.points[j].tangent_impulse;
+            }
+        }
+    }
+
+    pub fn solve_position_contraints(&mut self) -> bool {
+        let mut min_separation = 0.0;
+
+        for i in 0..self.count {
+            let pc = &self.position_constraints[i];
+
+            let index_a = pc.index_a;
+            let index_b = pc.index_b;
+            let local_center_a = pc.local_center_a;
+            let m_a = pc.inv_mass_a;
+            let i_a = pc.inv_ia;
+            let local_center_b = pc.local_center_b;
+            let m_b = pc.inv_mass_b;
+            let i_b = pc.inv_ib;
+            let point_count = pc.point_count;
+
+            let mut c_a = self.positions[index_a].c;
+            let mut a_a = self.positions[index_a].a;
+
+            let mut c_b = self.positions[index_b].c;
+            let mut a_b = self.positions[index_b].a;
+
+            // Solve normal constraints
+            for j in 0..point_count {
+                let q = Rot::new(a_a);
+                let xf_a = Transform {
+                    p: c_a - q * local_center_a,
+                    q,
+                };
+                let q = Rot::new(a_b);
+                let xf_b = Transform {
+                    p: c_b - q * local_center_b,
+                    q,
+                };
+
+                let mut psm = PositionSolverManifold::new();
+                psm.initialize(pc, &xf_a, &xf_b, j as i32);
+
+                let normal = psm.normal;
+                let point = psm.point;
+                let separation = psm.separation;
+
+                let r_a = point - c_a;
+                let r_b = point - c_b;
+
+                // Track max constraint error.
+                min_separation = min_separation.min(separation);
+
+                // Prevent large corrections and allow slop.
+                let C = (BAUMGARTE * (separation + LINEAR_SLOP))
+                    .clamp(-MAX_LINEAR_CORRECTION, 0.0);
+
+                // Compute the effective mass.
+                let rn_a = r_a.cross(normal);
+                let rn_b = r_b.cross(normal);
+                let K = pc.inv_mass_a
+                    + pc.inv_mass_b
+                    + pc.inv_i_a * rn_a * rn_a
+                    + pc.inv_i_b * rn_b * rn_b;
+
+                // Compute normal impulse
+                let impulse = if K > 0.0 { -C / K } else { 0.0 };
+
+                let P = impulse * normal;
+
+                c_a -= pc.inv_mass_a * P;
+                a_a -= pc.inv_i_a * r_a.cross(P);
+
+                c_b += pc.inv_mass_b * P;
+                a_b += pc.inv_i_b * r_b.cross(P);
+            }
+
+            self.positions[index_a].c = c_a;
+            self.positions[index_a].a = a_a;
+
+            self.positions[index_b].c = c_b;
+            self.positions[index_b].a = a_b;
+        }
+
+        // We can't expect minSpeparation >= -LINEAR_SLOP because we don't
+        // push the separation above -LINEAR_SLOP.
+        return min_separation >= -3.0 * LINEAR_SLOP;
+    }
+
+    pub fn solve_toi_position_contraints(
+        &mut self,
+        toi_index_a: i32,
+        toi_index_b: i32,
+    ) -> bool {
+        let mut min_separation = 0.0;
+
+        for i in 0..self.count {
+            let pc = &self.position_constraints[i];
+
+            let index_a = pc.index_a;
+            let index_b = pc.index_b;
+            let local_center_a = pc.local_center_a;
+            let local_center_b = pc.local_center_b;
+            let point_count = pc.point_count;
+
+            let m_a = if index_a == toi_index_a || index_a == toi_index_b {
+                pc.inv_mass_a
+            } else {
+                0.0
+            };
+            let i_a = if index_a == toi_index_a || index_a == toi_index_b {
+                pc.inv_ia
+            } else {
+                0.0
+            };
+
+            let mut c_a = self.positions[index_a].c;
+            let mut a_a = self.positions[index_a].a;
+
+            let mut c_b = self.positions[index_b].c;
+            let mut a_b = self.positions[index_b].a;
+
+            // Solve normal constraints
+            for j in 0..point_count {
+                let q = Rot::new(a_a);
+                let xf_a = Transform {
+                    p: c_a - q * local_center_a,
+                    q,
+                };
+                let q = Rot::new(a_b);
+                let xf_b = Transform {
+                    p: c_b - q * local_center_b,
+                    q,
+                };
+
+                let mut psm = PositionSolverManifold::new();
+                psm.initialize(pc, &xf_a, &xf_b, j as i32);
+
+                let normal = psm.normal;
+                let point = psm.point;
+                let separation = psm.separation;
+
+                let r_a = point - c_a;
+                let r_b = point - c_b;
+
+                // Track max constraint error.
+                min_separation = min_separation.min(separation);
+
+                // Prevent large corrections and allow slop.
+                let C = (BAUMGARTE * (separation + LINEAR_SLOP))
+                    .clamp(-MAX_LINEAR_CORRECTION, 0.0);
+
+                // Compute the effective mass.
+                let rn_a = r_a.cross(normal);
+                let rn_b = r_b.cross(normal);
+                let K = pc.inv_mass_a
+                    + pc.inv_mass_b
+                    + pc.inv_i_a * rn_a * rn_a
+                    + pc.inv_i_b * rn_b * rn_b;
+
+                // Compute normal impulse
+                let impulse = if K > 0.0 { -C / K } else { 0.0 };
+
+                let P = impulse * normal;
+
+                c_a -= pc.inv_mass_a * P;
+                a_a -= pc.inv_i_a * r_a.cross(P);
+
+                c_b += pc.inv_mass_b * P;
+                a_b += pc.inv_i_b * r_b.cross(P);
+            }
+
+            self.positions[index_a].c = c_a;
+            self.positions[index_a].a = a_a;
+
+            self.positions[index_b].c = c_b;
+            self.positions[index_b].a = a_b;
+        }
+
+        // We can't expect minSpeparation >= -LINEAR_SLOP because we don't
+        // push the separation above -LINEAR_SLOP.
+        return min_separation >= -1.5 * LINEAR_SLOP;
+    }
 }
-
-// b2ContactSolver::b2ContactSolver(b2ContactSolverDef* def)
-// {
-// 	m_step = def->step;k
-// 	m_allocator = def->allocator;
-// 	m_count = def->count;
-// 	m_positionConstraints = (b2ContactPositionConstraint*)m_allocator->Allocate(m_count * sizeof(b2ContactPositionConstraint));
-// 	m_velocityConstraints = (b2ContactVelocityConstraint*)m_allocator->Allocate(m_count * sizeof(b2ContactVelocityConstraint));
-// 	m_positions = def->positions;
-// 	m_velocities = def->velocities;
-// 	m_contacts = def->contacts;
-
-// }
-
-// b2ContactSolver::~b2ContactSolver()
-// {
-// 	m_allocator->Free(m_velocityConstraints);
-// 	m_allocator->Free(m_positionConstraints);
-// }
-
-// // Initialize position dependent portions of the velocity constraints.
-// void b2ContactSolver::InitializeVelocityConstraints()
-// {
-// 	for (int32 i = 0; i < m_count; ++i)
-// 	{
-// 		b2ContactVelocityConstraint* vc = m_velocityConstraints + i;
-// 		b2ContactPositionConstraint* pc = m_positionConstraints + i;
-
-// 		float radiusA = pc->radiusA;
-// 		float radiusB = pc->radiusB;
-// 		b2Manifold* manifold = m_contacts[vc->contactIndex]->GetManifold();
-
-// 		int32 indexA = vc->indexA;
-// 		int32 indexB = vc->indexB;
-
-// 		float mA = vc->invMassA;
-// 		float mB = vc->invMassB;
-// 		float iA = vc->invIA;
-// 		float iB = vc->invIB;
-// 		b2Vec2 localCenterA = pc->localCenterA;
-// 		b2Vec2 localCenterB = pc->localCenterB;
-
-// 		b2Vec2 cA = m_positions[indexA].c;
-// 		float aA = m_positions[indexA].a;
-// 		b2Vec2 vA = m_velocities[indexA].v;
-// 		float wA = m_velocities[indexA].w;
-
-// 		b2Vec2 cB = m_positions[indexB].c;
-// 		float aB = m_positions[indexB].a;
-// 		b2Vec2 vB = m_velocities[indexB].v;
-// 		float wB = m_velocities[indexB].w;
-
-// 		b2Assert(manifold->pointCount > 0);
-
-// 		b2Transform xfA, xfB;
-// 		xfA.q.Set(aA);
-// 		xfB.q.Set(aB);
-// 		xfA.p = cA - b2Mul(xfA.q, localCenterA);
-// 		xfB.p = cB - b2Mul(xfB.q, localCenterB);
-
-// 		b2WorldManifold worldManifold;
-// 		worldManifold.Initialize(manifold, xfA, radiusA, xfB, radiusB);
-
-// 		vc->normal = worldManifold.normal;
-
-// 		int32 pointCount = vc->pointCount;
-// 		for (int32 j = 0; j < pointCount; ++j)
-// 		{
-// 			b2VelocityConstraintPoint* vcp = vc->points + j;
-
-// 			vcp->rA = worldManifold.points[j] - cA;
-// 			vcp->rB = worldManifold.points[j] - cB;
-
-// 			float rnA = b2Cross(vcp->rA, vc->normal);
-// 			float rnB = b2Cross(vcp->rB, vc->normal);
-
-// 			float kNormal = mA + mB + iA * rnA * rnA + iB * rnB * rnB;
-
-// 			vcp->normalMass = kNormal > 0.0f ? 1.0f / kNormal : 0.0f;
-
-// 			b2Vec2 tangent = b2Cross(vc->normal, 1.0f);
-
-// 			float rtA = b2Cross(vcp->rA, tangent);
-// 			float rtB = b2Cross(vcp->rB, tangent);
-
-// 			float kTangent = mA + mB + iA * rtA * rtA + iB * rtB * rtB;
-
-// 			vcp->tangentMass = kTangent > 0.0f ? 1.0f /  kTangent : 0.0f;
-
-// 			// Setup a velocity bias for restitution.
-// 			vcp->velocityBias = 0.0f;
-// 			float vRel = b2Dot(vc->normal, vB + b2Cross(wB, vcp->rB) - vA - b2Cross(wA, vcp->rA));
-// 			if (vRel < -vc->threshold)
-// 			{
-// 				vcp->velocityBias = -vc->restitution * vRel;
-// 			}
-// 		}
-
-// 		// If we have two points, then prepare the block solver.
-// 		if (vc->pointCount == 2 && g_blockSolve)
-// 		{
-// 			b2VelocityConstraintPoint* vcp1 = vc->points + 0;
-// 			b2VelocityConstraintPoint* vcp2 = vc->points + 1;
-
-// 			float rn1A = b2Cross(vcp1->rA, vc->normal);
-// 			float rn1B = b2Cross(vcp1->rB, vc->normal);
-// 			float rn2A = b2Cross(vcp2->rA, vc->normal);
-// 			float rn2B = b2Cross(vcp2->rB, vc->normal);
-
-// 			float k11 = mA + mB + iA * rn1A * rn1A + iB * rn1B * rn1B;
-// 			float k22 = mA + mB + iA * rn2A * rn2A + iB * rn2B * rn2B;
-// 			float k12 = mA + mB + iA * rn1A * rn2A + iB * rn1B * rn2B;
-
-// 			// Ensure a reasonable condition number.
-// 			const float k_maxConditionNumber = 1000.0f;
-// 			if (k11 * k11 < k_maxConditionNumber * (k11 * k22 - k12 * k12))
-// 			{
-// 				// K is safe to invert.
-// 				vc->K.ex.Set(k11, k12);
-// 				vc->K.ey.Set(k12, k22);
-// 				vc->normalMass = vc->K.GetInverse();
-// 			}
-// 			else
-// 			{
-// 				// The constraints are redundant, just use one.
-// 				// TODO_ERIN use deepest?
-// 				vc->pointCount = 1;
-// 			}
-// 		}
-// 	}
-// }
-
-// void b2ContactSolver::WarmStart()
-// {
-// 	// Warm start.
-// 	for (int32 i = 0; i < m_count; ++i)
-// 	{
-// 		b2ContactVelocityConstraint* vc = m_velocityConstraints + i;
-
-// 		int32 indexA = vc->indexA;
-// 		int32 indexB = vc->indexB;
-// 		float mA = vc->invMassA;
-// 		float iA = vc->invIA;
-// 		float mB = vc->invMassB;
-// 		float iB = vc->invIB;
-// 		int32 pointCount = vc->pointCount;
-
-// 		b2Vec2 vA = m_velocities[indexA].v;
-// 		float wA = m_velocities[indexA].w;
-// 		b2Vec2 vB = m_velocities[indexB].v;
-// 		float wB = m_velocities[indexB].w;
-
-// 		b2Vec2 normal = vc->normal;
-// 		b2Vec2 tangent = b2Cross(normal, 1.0f);
-
-// 		for (int32 j = 0; j < pointCount; ++j)
-// 		{
-// 			b2VelocityConstraintPoint* vcp = vc->points + j;
-// 			b2Vec2 P = vcp->normalImpulse * normal + vcp->tangentImpulse * tangent;
-// 			wA -= iA * b2Cross(vcp->rA, P);
-// 			vA -= mA * P;
-// 			wB += iB * b2Cross(vcp->rB, P);
-// 			vB += mB * P;
-// 		}
-
-// 		m_velocities[indexA].v = vA;
-// 		m_velocities[indexA].w = wA;
-// 		m_velocities[indexB].v = vB;
-// 		m_velocities[indexB].w = wB;
-// 	}
-// }
-
-// void b2ContactSolver::SolveVelocityConstraints()
-// {
-// 	for (int32 i = 0; i < m_count; ++i)
-// 	{
-// 		b2ContactVelocityConstraint* vc = m_velocityConstraints + i;
-
-// 		int32 indexA = vc->indexA;
-// 		int32 indexB = vc->indexB;
-// 		float mA = vc->invMassA;
-// 		float iA = vc->invIA;
-// 		float mB = vc->invMassB;
-// 		float iB = vc->invIB;
-// 		int32 pointCount = vc->pointCount;
-
-// 		b2Vec2 vA = m_velocities[indexA].v;
-// 		float wA = m_velocities[indexA].w;
-// 		b2Vec2 vB = m_velocities[indexB].v;
-// 		float wB = m_velocities[indexB].w;
-
-// 		b2Vec2 normal = vc->normal;
-// 		b2Vec2 tangent = b2Cross(normal, 1.0f);
-// 		float friction = vc->friction;
-
-// 		b2Assert(pointCount == 1 || pointCount == 2);
-
-// 		// Solve tangent constraints first because non-penetration is more important
-// 		// than friction.
-// 		for (int32 j = 0; j < pointCount; ++j)
-// 		{
-// 			b2VelocityConstraintPoint* vcp = vc->points + j;
-
-// 			// Relative velocity at contact
-// 			b2Vec2 dv = vB + b2Cross(wB, vcp->rB) - vA - b2Cross(wA, vcp->rA);
-
-// 			// Compute tangent force
-// 			float vt = b2Dot(dv, tangent) - vc->tangentSpeed;
-// 			float lambda = vcp->tangentMass * (-vt);
-
-// 			// b2Clamp the accumulated force
-// 			float maxFriction = friction * vcp->normalImpulse;
-// 			float newImpulse = b2Clamp(vcp->tangentImpulse + lambda, -maxFriction, maxFriction);
-// 			lambda = newImpulse - vcp->tangentImpulse;
-// 			vcp->tangentImpulse = newImpulse;
-
-// 			// Apply contact impulse
-// 			b2Vec2 P = lambda * tangent;
-
-// 			vA -= mA * P;
-// 			wA -= iA * b2Cross(vcp->rA, P);
-
-// 			vB += mB * P;
-// 			wB += iB * b2Cross(vcp->rB, P);
-// 		}
-
-// 		// Solve normal constraints
-// 		if (pointCount == 1 || g_blockSolve == false)
-// 		{
-// 			for (int32 j = 0; j < pointCount; ++j)
-// 			{
-// 				b2VelocityConstraintPoint* vcp = vc->points + j;
-
-// 				// Relative velocity at contact
-// 				b2Vec2 dv = vB + b2Cross(wB, vcp->rB) - vA - b2Cross(wA, vcp->rA);
-
-// 				// Compute normal impulse
-// 				float vn = b2Dot(dv, normal);
-// 				float lambda = -vcp->normalMass * (vn - vcp->velocityBias);
-
-// 				// b2Clamp the accumulated impulse
-// 				float newImpulse = b2Max(vcp->normalImpulse + lambda, 0.0f);
-// 				lambda = newImpulse - vcp->normalImpulse;
-// 				vcp->normalImpulse = newImpulse;
-
-// 				// Apply contact impulse
-// 				b2Vec2 P = lambda * normal;
-// 				vA -= mA * P;
-// 				wA -= iA * b2Cross(vcp->rA, P);
-
-// 				vB += mB * P;
-// 				wB += iB * b2Cross(vcp->rB, P);
-// 			}
-// 		}
-// 		else
-// 		{
-// 			// Block solver developed in collaboration with Dirk Gregorius (back in 01/07 on Box2D_Lite).
-// 			// Build the mini LCP for this contact patch
-// 			//
-// 			// vn = A * x + b, vn >= 0, x >= 0 and vn_i * x_i = 0 with i = 1..2
-// 			//
-// 			// A = J * W * JT and J = ( -n, -r1 x n, n, r2 x n )
-// 			// b = vn0 - velocityBias
-// 			//
-// 			// The system is solved using the "Total enumeration method" (s. Murty). The complementary constraint vn_i * x_i
-// 			// implies that we must have in any solution either vn_i = 0 or x_i = 0. So for the 2D contact problem the cases
-// 			// vn1 = 0 and vn2 = 0, x1 = 0 and x2 = 0, x1 = 0 and vn2 = 0, x2 = 0 and vn1 = 0 need to be tested. The first valid
-// 			// solution that satisfies the problem is chosen.
-// 			//
-// 			// In order to account of the accumulated impulse 'a' (because of the iterative nature of the solver which only requires
-// 			// that the accumulated impulse is clamped and not the incremental impulse) we change the impulse variable (x_i).
-// 			//
-// 			// Substitute:
-// 			//
-// 			// x = a + d
-// 			//
-// 			// a := old total impulse
-// 			// x := new total impulse
-// 			// d := incremental impulse
-// 			//
-// 			// For the current iteration we extend the formula for the incremental impulse
-// 			// to compute the new total impulse:
-// 			//
-// 			// vn = A * d + b
-// 			//    = A * (x - a) + b
-// 			//    = A * x + b - A * a
-// 			//    = A * x + b'
-// 			// b' = b - A * a;
-
-// 			b2VelocityConstraintPoint* cp1 = vc->points + 0;
-// 			b2VelocityConstraintPoint* cp2 = vc->points + 1;
-
-// 			b2Vec2 a(cp1->normalImpulse, cp2->normalImpulse);
-// 			b2Assert(a.x >= 0.0f && a.y >= 0.0f);
-
-// 			// Relative velocity at contact
-// 			b2Vec2 dv1 = vB + b2Cross(wB, cp1->rB) - vA - b2Cross(wA, cp1->rA);
-// 			b2Vec2 dv2 = vB + b2Cross(wB, cp2->rB) - vA - b2Cross(wA, cp2->rA);
-
-// 			// Compute normal velocity
-// 			float vn1 = b2Dot(dv1, normal);
-// 			float vn2 = b2Dot(dv2, normal);
-
-// 			b2Vec2 b;
-// 			b.x = vn1 - cp1->velocityBias;
-// 			b.y = vn2 - cp2->velocityBias;
-
-// 			// Compute b'
-// 			b -= b2Mul(vc->K, a);
-
-// 			const float k_errorTol = 1e-3f;
-// 			B2_NOT_USED(k_errorTol);
-
-// 			for (;;)
-// 			{
-// 				//
-// 				// Case 1: vn = 0
-// 				//
-// 				// 0 = A * x + b'
-// 				//
-// 				// Solve for x:
-// 				//
-// 				// x = - inv(A) * b'
-// 				//
-// 				b2Vec2 x = - b2Mul(vc->normalMass, b);
-
-// 				if (x.x >= 0.0f && x.y >= 0.0f)
-// 				{
-// 					// Get the incremental impulse
-// 					b2Vec2 d = x - a;
-
-// 					// Apply incremental impulse
-// 					b2Vec2 P1 = d.x * normal;
-// 					b2Vec2 P2 = d.y * normal;
-// 					vA -= mA * (P1 + P2);
-// 					wA -= iA * (b2Cross(cp1->rA, P1) + b2Cross(cp2->rA, P2));
-
-// 					vB += mB * (P1 + P2);
-// 					wB += iB * (b2Cross(cp1->rB, P1) + b2Cross(cp2->rB, P2));
-
-// 					// Accumulate
-// 					cp1->normalImpulse = x.x;
-// 					cp2->normalImpulse = x.y;
-
-// #if B2_DEBUG_SOLVER == 1
-// 					// Postconditions
-// 					dv1 = vB + b2Cross(wB, cp1->rB) - vA - b2Cross(wA, cp1->rA);
-// 					dv2 = vB + b2Cross(wB, cp2->rB) - vA - b2Cross(wA, cp2->rA);
-
-// 					// Compute normal velocity
-// 					vn1 = b2Dot(dv1, normal);
-// 					vn2 = b2Dot(dv2, normal);
-
-// 					b2Assert(b2Abs(vn1 - cp1->velocityBias) < k_errorTol);
-// 					b2Assert(b2Abs(vn2 - cp2->velocityBias) < k_errorTol);
-// #endif
-// 					break;
-// 				}
-
-// 				//
-// 				// Case 2: vn1 = 0 and x2 = 0
-// 				//
-// 				//   0 = a11 * x1 + a12 * 0 + b1'
-// 				// vn2 = a21 * x1 + a22 * 0 + b2'
-// 				//
-// 				x.x = - cp1->normalMass * b.x;
-// 				x.y = 0.0f;
-// 				vn1 = 0.0f;
-// 				vn2 = vc->K.ex.y * x.x + b.y;
-// 				if (x.x >= 0.0f && vn2 >= 0.0f)
-// 				{
-// 					// Get the incremental impulse
-// 					b2Vec2 d = x - a;
-
-// 					// Apply incremental impulse
-// 					b2Vec2 P1 = d.x * normal;
-// 					b2Vec2 P2 = d.y * normal;
-// 					vA -= mA * (P1 + P2);
-// 					wA -= iA * (b2Cross(cp1->rA, P1) + b2Cross(cp2->rA, P2));
-
-// 					vB += mB * (P1 + P2);
-// 					wB += iB * (b2Cross(cp1->rB, P1) + b2Cross(cp2->rB, P2));
-
-// 					// Accumulate
-// 					cp1->normalImpulse = x.x;
-// 					cp2->normalImpulse = x.y;
-
-// #if B2_DEBUG_SOLVER == 1
-// 					// Postconditions
-// 					dv1 = vB + b2Cross(wB, cp1->rB) - vA - b2Cross(wA, cp1->rA);
-
-// 					// Compute normal velocity
-// 					vn1 = b2Dot(dv1, normal);
-
-// 					b2Assert(b2Abs(vn1 - cp1->velocityBias) < k_errorTol);
-// #endif
-// 					break;
-// 				}
-
-// 				//
-// 				// Case 3: vn2 = 0 and x1 = 0
-// 				//
-// 				// vn1 = a11 * 0 + a12 * x2 + b1'
-// 				//   0 = a21 * 0 + a22 * x2 + b2'
-// 				//
-// 				x.x = 0.0f;
-// 				x.y = - cp2->normalMass * b.y;
-// 				vn1 = vc->K.ey.x * x.y + b.x;
-// 				vn2 = 0.0f;
-
-// 				if (x.y >= 0.0f && vn1 >= 0.0f)
-// 				{
-// 					// Resubstitute for the incremental impulse
-// 					b2Vec2 d = x - a;
-
-// 					// Apply incremental impulse
-// 					b2Vec2 P1 = d.x * normal;
-// 					b2Vec2 P2 = d.y * normal;
-// 					vA -= mA * (P1 + P2);
-// 					wA -= iA * (b2Cross(cp1->rA, P1) + b2Cross(cp2->rA, P2));
-
-// 					vB += mB * (P1 + P2);
-// 					wB += iB * (b2Cross(cp1->rB, P1) + b2Cross(cp2->rB, P2));
-
-// 					// Accumulate
-// 					cp1->normalImpulse = x.x;
-// 					cp2->normalImpulse = x.y;
-
-// #if B2_DEBUG_SOLVER == 1
-// 					// Postconditions
-// 					dv2 = vB + b2Cross(wB, cp2->rB) - vA - b2Cross(wA, cp2->rA);
-
-// 					// Compute normal velocity
-// 					vn2 = b2Dot(dv2, normal);
-
-// 					b2Assert(b2Abs(vn2 - cp2->velocityBias) < k_errorTol);
-// #endif
-// 					break;
-// 				}
-
-// 				//
-// 				// Case 4: x1 = 0 and x2 = 0
-// 				//
-// 				// vn1 = b1
-// 				// vn2 = b2;
-// 				x.x = 0.0f;
-// 				x.y = 0.0f;
-// 				vn1 = b.x;
-// 				vn2 = b.y;
-
-// 				if (vn1 >= 0.0f && vn2 >= 0.0f )
-// 				{
-// 					// Resubstitute for the incremental impulse
-// 					b2Vec2 d = x - a;
-
-// 					// Apply incremental impulse
-// 					b2Vec2 P1 = d.x * normal;
-// 					b2Vec2 P2 = d.y * normal;
-// 					vA -= mA * (P1 + P2);
-// 					wA -= iA * (b2Cross(cp1->rA, P1) + b2Cross(cp2->rA, P2));
-
-// 					vB += mB * (P1 + P2);
-// 					wB += iB * (b2Cross(cp1->rB, P1) + b2Cross(cp2->rB, P2));
-
-// 					// Accumulate
-// 					cp1->normalImpulse = x.x;
-// 					cp2->normalImpulse = x.y;
-
-// 					break;
-// 				}
-
-// 				// No solution, give up. This is hit sometimes, but it doesn't seem to matter.
-// 				break;
-// 			}
-// 		}
-
-// 		m_velocities[indexA].v = vA;
-// 		m_velocities[indexA].w = wA;
-// 		m_velocities[indexB].v = vB;
-// 		m_velocities[indexB].w = wB;
-// 	}
-// }
-
-// void b2ContactSolver::StoreImpulses()
-// {
-// 	for (int32 i = 0; i < m_count; ++i)
-// 	{
-// 		b2ContactVelocityConstraint* vc = m_velocityConstraints + i;
-// 		b2Manifold* manifold = m_contacts[vc->contactIndex]->GetManifold();
-
-// 		for (int32 j = 0; j < vc->pointCount; ++j)
-// 		{
-// 			manifold->points[j].normalImpulse = vc->points[j].normalImpulse;
-// 			manifold->points[j].tangentImpulse = vc->points[j].tangentImpulse;
-// 		}
-// 	}
-// }
-
-// struct b2PositionSolverManifold
-// {
-// 	void Initialize(b2ContactPositionConstraint* pc, const b2Transform& xfA, const b2Transform& xfB, int32 index)
-// 	{
-// 		b2Assert(pc->pointCount > 0);
-
-// 		switch (pc->type)
-// 		{
-// 		case b2Manifold::e_circles:
-// 			{
-// 				b2Vec2 pointA = b2Mul(xfA, pc->localPoint);
-// 				b2Vec2 pointB = b2Mul(xfB, pc->localPoints[0]);
-// 				normal = pointB - pointA;
-// 				normal.Normalize();
-// 				point = 0.5f * (pointA + pointB);
-// 				separation = b2Dot(pointB - pointA, normal) - pc->radiusA - pc->radiusB;
-// 			}
-// 			break;
-
-// 		case b2Manifold::e_faceA:
-// 			{
-// 				normal = b2Mul(xfA.q, pc->localNormal);
-// 				b2Vec2 planePoint = b2Mul(xfA, pc->localPoint);
-
-// 				b2Vec2 clipPoint = b2Mul(xfB, pc->localPoints[index]);
-// 				separation = b2Dot(clipPoint - planePoint, normal) - pc->radiusA - pc->radiusB;
-// 				point = clipPoint;
-// 			}
-// 			break;
-
-// 		case b2Manifold::e_faceB:
-// 			{
-// 				normal = b2Mul(xfB.q, pc->localNormal);
-// 				b2Vec2 planePoint = b2Mul(xfB, pc->localPoint);
-
-// 				b2Vec2 clipPoint = b2Mul(xfA, pc->localPoints[index]);
-// 				separation = b2Dot(clipPoint - planePoint, normal) - pc->radiusA - pc->radiusB;
-// 				point = clipPoint;
-
-// 				// Ensure normal points from A to B
-// 				normal = -normal;
-// 			}
-// 			break;
-// 		}
-// 	}
-
-// 	b2Vec2 normal;
-// 	b2Vec2 point;
-// 	float separation;
-// };
-
-// // Sequential solver.
-// bool b2ContactSolver::SolvePositionConstraints()
-// {
-// 	float minSeparation = 0.0f;
-
-// 	for (int32 i = 0; i < m_count; ++i)
-// 	{
-// 		b2ContactPositionConstraint* pc = m_positionConstraints + i;
-
-// 		int32 indexA = pc->indexA;
-// 		int32 indexB = pc->indexB;
-// 		b2Vec2 localCenterA = pc->localCenterA;
-// 		float mA = pc->invMassA;
-// 		float iA = pc->invIA;
-// 		b2Vec2 localCenterB = pc->localCenterB;
-// 		float mB = pc->invMassB;
-// 		float iB = pc->invIB;
-// 		int32 pointCount = pc->pointCount;
-
-// 		b2Vec2 cA = m_positions[indexA].c;
-// 		float aA = m_positions[indexA].a;
-
-// 		b2Vec2 cB = m_positions[indexB].c;
-// 		float aB = m_positions[indexB].a;
-
-// 		// Solve normal constraints
-// 		for (int32 j = 0; j < pointCount; ++j)
-// 		{
-// 			b2Transform xfA, xfB;
-// 			xfA.q.Set(aA);
-// 			xfB.q.Set(aB);
-// 			xfA.p = cA - b2Mul(xfA.q, localCenterA);
-// 			xfB.p = cB - b2Mul(xfB.q, localCenterB);
-
-// 			b2PositionSolverManifold psm;
-// 			psm.Initialize(pc, xfA, xfB, j);
-// 			b2Vec2 normal = psm.normal;
-
-// 			b2Vec2 point = psm.point;
-// 			float separation = psm.separation;
-
-// 			b2Vec2 rA = point - cA;
-// 			b2Vec2 rB = point - cB;
-
-// 			// Track max constraint error.
-// 			minSeparation = b2Min(minSeparation, separation);
-
-// 			// Prevent large corrections and allow slop.
-// 			float C = b2Clamp(b2_baumgarte * (separation + b2_linearSlop), -b2_maxLinearCorrection, 0.0f);
-
-// 			// Compute the effective mass.
-// 			float rnA = b2Cross(rA, normal);
-// 			float rnB = b2Cross(rB, normal);
-// 			float K = mA + mB + iA * rnA * rnA + iB * rnB * rnB;
-
-// 			// Compute normal impulse
-// 			float impulse = K > 0.0f ? - C / K : 0.0f;
-
-// 			b2Vec2 P = impulse * normal;
-
-// 			cA -= mA * P;
-// 			aA -= iA * b2Cross(rA, P);
-
-// 			cB += mB * P;
-// 			aB += iB * b2Cross(rB, P);
-// 		}
-
-// 		m_positions[indexA].c = cA;
-// 		m_positions[indexA].a = aA;
-
-// 		m_positions[indexB].c = cB;
-// 		m_positions[indexB].a = aB;
-// 	}
-
-// 	// We can't expect minSpeparation >= -b2_linearSlop because we don't
-// 	// push the separation above -b2_linearSlop.
-// 	return minSeparation >= -3.0f * b2_linearSlop;
-// }
-
-// // Sequential position solver for position constraints.
-// bool b2ContactSolver::SolveTOIPositionConstraints(int32 toiIndexA, int32 toiIndexB)
-// {
-// 	float minSeparation = 0.0f;
-
-// 	for (int32 i = 0; i < m_count; ++i)
-// 	{
-// 		b2ContactPositionConstraint* pc = m_positionConstraints + i;
-
-// 		int32 indexA = pc->indexA;
-// 		int32 indexB = pc->indexB;
-// 		b2Vec2 localCenterA = pc->localCenterA;
-// 		b2Vec2 localCenterB = pc->localCenterB;
-// 		int32 pointCount = pc->pointCount;
-
-// 		float mA = 0.0f;
-// 		float iA = 0.0f;
-// 		if (indexA == toiIndexA || indexA == toiIndexB)
-// 		{
-// 			mA = pc->invMassA;
-// 			iA = pc->invIA;
-// 		}
-
-// 		float mB = 0.0f;
-// 		float iB = 0.0f;
-// 		if (indexB == toiIndexA || indexB == toiIndexB)
-// 		{
-// 			mB = pc->invMassB;
-// 			iB = pc->invIB;
-// 		}
-
-// 		b2Vec2 cA = m_positions[indexA].c;
-// 		float aA = m_positions[indexA].a;
-
-// 		b2Vec2 cB = m_positions[indexB].c;
-// 		float aB = m_positions[indexB].a;
-
-// 		// Solve normal constraints
-// 		for (int32 j = 0; j < pointCount; ++j)
-// 		{
-// 			b2Transform xfA, xfB;
-// 			xfA.q.Set(aA);
-// 			xfB.q.Set(aB);
-// 			xfA.p = cA - b2Mul(xfA.q, localCenterA);
-// 			xfB.p = cB - b2Mul(xfB.q, localCenterB);
-
-// 			b2PositionSolverManifold psm;
-// 			psm.Initialize(pc, xfA, xfB, j);
-// 			b2Vec2 normal = psm.normal;
-
-// 			b2Vec2 point = psm.point;
-// 			float separation = psm.separation;
-
-// 			b2Vec2 rA = point - cA;
-// 			b2Vec2 rB = point - cB;
-
-// 			// Track max constraint error.
-// 			minSeparation = b2Min(minSeparation, separation);
-
-// 			// Prevent large corrections and allow slop.
-// 			float C = b2Clamp(b2_toiBaumgarte * (separation + b2_linearSlop), -b2_maxLinearCorrection, 0.0f);
-
-// 			// Compute the effective mass.
-// 			float rnA = b2Cross(rA, normal);
-// 			float rnB = b2Cross(rB, normal);
-// 			float K = mA + mB + iA * rnA * rnA + iB * rnB * rnB;
-
-// 			// Compute normal impulse
-// 			float impulse = K > 0.0f ? - C / K : 0.0f;
-
-// 			b2Vec2 P = impulse * normal;
-
-// 			cA -= mA * P;
-// 			aA -= iA * b2Cross(rA, P);
-
-// 			cB += mB * P;
-// 			aB += iB * b2Cross(rB, P);
-// 		}
-
-// 		m_positions[indexA].c = cA;
-// 		m_positions[indexA].a = aA;
-
-// 		m_positions[indexB].c = cB;
-// 		m_positions[indexB].a = aB;
-// 	}
-
-// 	// We can't expect minSpeparation >= -b2_linearSlop because we don't
-// 	// push the separation above -b2_linearSlop.
-// 	return minSeparation >= -1.5f * b2_linearSlop;

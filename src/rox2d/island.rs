@@ -1,9 +1,13 @@
 use super::{
+    common::{
+        MAX_ROTATION, MAX_ROTATION_SQUARED, MAX_TRANSLATION,
+        MAX_TRANSLATION_SQUARED,
+    },
     contact::Contact,
     contact_solver::{ContactSolver, ContactSolverDef},
     joint::Joint,
     time_step::{SolverData, TimeStep},
-    Body, Vec2,
+    Body, BodyType, Vec2,
 };
 
 pub struct Position {
@@ -68,12 +72,15 @@ impl Island {
     fn solve(&self, step: TimeStep, gravity: Vec2) {
         let h = step.dt;
         for (body, data) in self.bodies.iter_mut().zip(self.data.iter_mut()) {
-            let c = body.position;
-            let a = body.rotation;
-            let v = body.velocity;
+            let c = body.sweep.c;
+            let a = body.sweep.a;
+            let v = body.linear_velocity;
             let w = body.angular_velocity;
-            // if (body.ty == BodyType::DYNAMIC)
-            {
+
+            body.sweep.c0 = body.sweep.c;
+            body.sweep.a0 = body.sweep.a;
+
+            if body.ty == BodyType::DYNAMIC {
                 // Integrate velocities.
                 v += h
                     * body.inv_mass
@@ -100,14 +107,7 @@ impl Island {
 
         // Solver data
         let solver_data = SolverData {
-            step: TimeStep {
-                dt,
-                inv_dt: dt.recip(),
-                dt_ratio: 0.0,
-                velocity_iterations: 0,
-                position_iterations: 0,
-                ..Default::default()
-            },
+            step,
             positions: self
                 .data
                 .iter()
@@ -128,7 +128,7 @@ impl Island {
 
         // Initialize velocity constraints.
         let contact_solver_def = ContactSolverDef {
-            step: solver_data.step,
+            step,
             contacts: &self.contacts,
             positions: &solver_data.positions,
             velocities: &solver_data.velocities,
@@ -166,14 +166,14 @@ impl Island {
 
             // Check for large velocities
             let translation = h * v;
-            if translation.dot(translation) > b2_max_translation_squared {
-                let ratio = b2_max_translation / translation.length();
+            if translation.dot(translation) > MAX_TRANSLATION_SQUARED {
+                let ratio = MAX_TRANSLATION / translation.length();
                 v *= ratio;
             }
 
             let rotation = h * w;
-            if rotation * rotation > b2_max_rotation_squared {
-                let ratio = b2_max_rotation / rotation.abs();
+            if rotation * rotation > MAX_ROTATION_SQUARED {
+                let ratio = MAX_ROTATION / rotation.abs();
                 w *= ratio;
             }
 

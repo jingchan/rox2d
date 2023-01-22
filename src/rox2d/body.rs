@@ -1,15 +1,17 @@
 use bitflags::bitflags;
 use std::cmp::Ordering;
 
-use crate::{Sweep, Transform};
-
-use super::{contact::ContactEdge, fixture::Fixture, math::Vec2, World};
+use super::{
+    contact::ContactEdge, fixture::Fixture, joint::JointEdge, Sweep, Transform,
+    Vec2, World,
+};
 
 /// The body type.
 /// - static: zero mass, zero velocity, may be manually moved
 /// - kinematic: zero mass, non-zero velocity set by user, moved by solver
 /// - dynamic: positive mass,non-zero velocity determined by forces, moved by
 /// solver
+#[derive(Debug, Clone)]
 pub enum BodyType {
     Static,
     Kinematic,
@@ -111,8 +113,8 @@ pub struct Body {
     pub torque: f32,
 
     pub world: World,
-    pub prev: Option<Body>,
-    pub next: Option<Body>,
+    pub prev: Option<Box<Body>>,
+    pub next: Option<Box<Body>>,
 
     pub fixture_list: Option<Fixture>,
     pub fixture_count: i32,
@@ -132,8 +134,7 @@ pub struct Body {
     pub gravity_scale: f32,
 
     pub sleep_time: f32,
-
-    pub user_data: Option<Box<dyn std::any::Any>>,
+    // pub user_data: Option<Box<dyn std::any::Any>>,
 }
 
 impl Body {
@@ -144,7 +145,7 @@ impl Body {
             flags: BodyFlags::ACTIVE,
             island_index: 0,
             xf: Transform::new(def.position, def.angle),
-            sweep: Sweep::new(),
+            sweep: Sweep::default(),
             linear_velocity: def.linear_velocity,
             angular_velocity: def.angular_velocity,
             force: Vec2::ZERO,
@@ -164,7 +165,7 @@ impl Body {
             angular_damping: def.angular_damping,
             gravity_scale: def.gravity_scale,
             sleep_time: 0.0,
-            user_data: def.user_data.clone(),
+            // user_data: def.user_data.clone(),
         };
 
         if def.awake {
@@ -187,7 +188,7 @@ impl Body {
             body.flags |= BodyFlags::ACTIVE;
         }
 
-        body.sweep.local_center.set_zero();
+        body.sweep.local_center = Vec2::ZERO;
         body.sweep.c0 = body.xf.p;
         body.sweep.c = body.xf.p;
         body.sweep.a0 = body.xf.q.get_angle();
@@ -196,92 +197,21 @@ impl Body {
 
         body
     }
-    // 	b2Assert(bd->position.IsValid());
-    // 	b2Assert(bd->linearVelocity.IsValid());
-    // 	b2Assert(b2IsValid(bd->angle));
-    // 	b2Assert(b2IsValid(bd->angularVelocity));
-    // 	b2Assert(b2IsValid(bd->angularDamping) && bd->angularDamping >= 0.0f);
-    // 	b2Assert(b2IsValid(bd->linearDamping) && bd->linearDamping >= 0.0f);
-
-    // 	m_flags = 0;
-
-    // 	if (bd->bullet)
-    // 	{
-    // 		m_flags |= e_bulletFlag;
-    // 	}
-    // 	if (bd->fixedRotation)
-    // 	{
-    // 		m_flags |= e_fixedRotationFlag;
-    // 	}
-    // 	if (bd->allowSleep)
-    // 	{
-    // 		m_flags |= e_autoSleepFlag;
-    // 	}
-    // 	if (bd->awake && bd->type != b2_staticBody)
-    // 	{
-    // 		m_flags |= e_awakeFlag;
-    // 	}
-    // 	if (bd->enabled)
-    // 	{
-    // 		m_flags |= e_enabledFlag;
-    // 	}
-
-    // 	m_world = world;
-
-    // 	m_xf.p = bd->position;
-    // 	m_xf.q.Set(bd->angle);
-
-    // 	m_sweep.localCenter.SetZero();
-    // 	m_sweep.c0 = m_xf.p;
-    // 	m_sweep.c = m_xf.p;
-    // 	m_sweep.a0 = bd->angle;
-    // 	m_sweep.a = bd->angle;
-    // 	m_sweep.alpha0 = 0.0f;
-
-    // 	m_jointList = nullptr;
-    // 	m_contactList = nullptr;
-    // 	m_prev = nullptr;
-    // 	m_next = nullptr;
-
-    // 	m_linearVelocity = bd->linearVelocity;
-    // 	m_angularVelocity = bd->angularVelocity;
-
-    // 	m_linearDamping = bd->linearDamping;
-    // 	m_angularDamping = bd->angularDamping;
-    // 	m_gravityScale = bd->gravityScale;
-
-    // 	m_force.SetZero();
-    // 	m_torque = 0.0f;
-
-    // 	m_sleepTime = 0.0f;
-
-    // 	m_type = bd->type;
-
-    // 	m_mass = 0.0f;
-    // 	m_invMass = 0.0f;
-
-    // 	m_I = 0.0f;
-    // 	m_invI = 0.0f;
-
-    // 	m_userData = bd->userData;
-
-    // 	m_fixtureList = nullptr;
-    // 	m_fixtureCount = 0;
 }
 
-impl PartialEq for Body {
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
+// impl PartialEq for Body {
+//     #[inline(always)]
+//     fn eq(&self, other: &Self) -> bool {
+//         self.id == other.id
+//     }
+// }
 
-impl PartialOrd for Body {
-    #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.id.cmp(&other.id))
-    }
-}
+// impl PartialOrd for Body {
+//     #[inline(always)]
+//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+//         Some(self.id.cmp(&other.id))
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
