@@ -1,5 +1,4 @@
-# Rox2d - A 2D physics engine written in rust and heavily inspired by (the
-# venerable) Box2D
+# Rox2d - A 2D physics engine written in rust and heavily inspired by (the venerable) Box2D
 
 
 # Notes to self

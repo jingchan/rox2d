@@ -204,6 +204,7 @@ impl WorldManifold {
 }
 
 /// This is used for determining the state of contact points.
+#[derive(Debug, Clone, Copy)]
 enum PointState {
     /// point does not exist
     NullState,
@@ -216,6 +217,7 @@ enum PointState {
 }
 
 /// Used for computing contact manifolds.
+#[derive(Debug, Clone, Copy)]
 struct ClipVertex {
     v: Vec2,
     id: ContactId,
@@ -223,6 +225,7 @@ struct ClipVertex {
 
 /// Ray-cast input data. The ray extends from p1 to p1 + max_fraction * (p2 -
 /// p1).
+#[derive(Debug, Clone, Copy)]
 struct RayCastInput {
     pub p1: Vec2,
     pub p2: Vec2,
@@ -231,12 +234,14 @@ struct RayCastInput {
 
 /// Ray-cast output data. The ray hits at p1 + fraction * (p2 - p1), where p1
 /// and p2 come from RayCastInput.
+#[derive(Debug, Clone, Copy)]
 struct RayCastOutput {
     pub normal: Vec2,
     pub fraction: f32,
 }
 
 /// An axis aligned bounding box.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Aabb {
     /// The lower vertex.
     pub lower_bound: Vec2,
@@ -244,7 +249,181 @@ pub struct Aabb {
     pub upper_bound: Vec2,
 }
 
+impl Aabb {
+    /// Get the center of the AABB.
+    #[inline]
+    pub fn center(&self) -> Vec2 {
+        0.5 * (self.lower_bound + self.upper_bound)
+    }
+
+    /// Get the extents of the AABB (half-widths).
+    #[inline]
+    pub fn extents(&self) -> Vec2 {
+        0.5 * (self.upper_bound - self.lower_bound)
+    }
+
+    /// Get the perimeter length
+    pub fn get_perimeter(&self) -> f32 {
+        let wx = self.upper_bound.x - self.lower_bound.x;
+        let wy = self.upper_bound.y - self.lower_bound.y;
+        2.0 * (wx + wy)
+    }
+
+    /// Combine this AABBs with another.
+    #[inline]
+    pub fn combine(&self, other: &Aabb) -> Self {
+        let lower_bound = self.lower_bound.min(other.lower_bound);
+        let upper_bound = self.upper_bound.min(other.upper_bound);
+        Self {
+            lower_bound,
+            upper_bound,
+        }
+    }
+
+    /// Is the given AABB contained within this AABB?
+    #[inline]
+    pub fn contains(&self, other: &Aabb) -> bool {
+        let result = self.lower_bound.x <= other.lower_bound.x
+            && self.lower_bound.y <= other.lower_bound.y
+            && self.upper_bound.x >= other.upper_bound.x
+            && self.upper_bound.y >= other.upper_bound.y;
+        result
+    }
+
+    // From Real-time Collision Detection, p179.
+    pub fn ray_cast(
+        &self,
+        output: &mut RayCastOutput,
+        input: &RayCastInput,
+    ) -> bool {
+        let mut tmin = -f32::MAX;
+        let mut tmax = f32::MAX;
+
+        let p = input.p1;
+        let d = input.p2 - input.p1;
+        let abs_d = d.abs();
+
+        let mut normal = Vec2::ZERO;
+
+        for i in 0..2 {
+            if abs_d.get(i) < f32::EPSILON {
+                // Parallel.
+                if p.get(i) < self.lower_bound.get(i)
+                    || self.upper_bound.get(i) < p.get(i)
+                {
+                    return false;
+                }
+            } else {
+                let inv_d = 1.0 / d.get(i);
+                let mut t1 = (self.lower_bound.get(i) - p.get(i)) * inv_d;
+                let mut t2 = (self.upper_bound.get(i) - p.get(i)) * inv_d;
+
+                // Sign of the normal vector.
+                let mut s = -1.0;
+
+                if t1 > t2 {
+                    core::mem::swap(&mut t1, &mut t2);
+                    s = 1.0;
+                }
+
+                // Push the min up
+                if t1 > tmin {
+                    normal = Vec2::ZERO;
+                    *normal.get_mut(i) = s;
+                    tmin = t1;
+                }
+
+                // Pull the max down
+                tmax = tmax.min(t2);
+
+                if tmin > tmax {
+                    return false;
+                }
+            }
+        }
+
+        // Does the ray start inside the box?
+        // Does the ray intersect beyond the max fraction?
+        if tmin < 0.0 || input.max_fraction < tmin {
+            return false;
+        }
+
+        // Intersection.
+        output.fraction = tmin;
+        output.normal = normal;
+        true
+    }
+
+    // bool b2AABB::RayCast(b2RayCastOutput* output, const b2RayCastInput& input) const
+    // {
+    // 	float tmin = -b2_maxFloat;
+    // 	float tmax = b2_maxFloat;
+
+    // 	b2Vec2 p = input.p1;
+    // 	b2Vec2 d = input.p2 - input.p1;
+    // 	b2Vec2 absD = b2Abs(d);
+
+    // 	b2Vec2 normal;
+
+    // 	for (int32 i = 0; i < 2; ++i)
+    // 	{
+    // 		if (absD(i) < b2_epsilon)
+    // 		{
+    // 			// Parallel.
+    // 			if (p(i) < lowerBound(i) || upperBound(i) < p(i))
+    // 			{
+    // 				return false;
+    // 			}
+    // 		}
+    // 		else
+    // 		{
+    // 			float inv_d = 1.0f / d(i);
+    // 			float t1 = (lowerBound(i) - p(i)) * inv_d;
+    // 			float t2 = (upperBound(i) - p(i)) * inv_d;
+
+    // 			// Sign of the normal vector.
+    // 			float s = -1.0f;
+
+    // 			if (t1 > t2)
+    // 			{
+    // 				b2Swap(t1, t2);
+    // 				s = 1.0f;
+    // 			}
+
+    // 			// Push the min up
+    // 			if (t1 > tmin)
+    // 			{
+    // 				normal.SetZero();
+    // 				normal(i) = s;
+    // 				tmin = t1;
+    // 			}
+
+    // 			// Pull the max down
+    // 			tmax = b2Min(tmax, t2);
+
+    // 			if (tmin > tmax)
+    // 			{
+    // 				return false;
+    // 			}
+    // 		}
+    // 	}
+
+    // 	// Does the ray start inside the box?
+    // 	// Does the ray intersect beyond the max fraction?
+    // 	if (tmin < 0.0f || input.maxFraction < tmin)
+    // 	{
+    // 		return false;
+    // 	}
+
+    // 	// Intersection.
+    // 	output->fraction = tmin;
+    // 	output->normal = normal;
+    // 	return true;
+    // }
+}
+
 /// Convex hull used for polygon collision.
+#[derive(Debug, Clone, Copy)]
 struct Hull {
     points: [Vec2; MAX_POLYGON_VERTICES],
     count: usize,

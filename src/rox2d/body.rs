@@ -2,8 +2,8 @@ use bitflags::bitflags;
 use std::cmp::Ordering;
 
 use super::{
-    contact::ContactEdge, fixture::Fixture, joint::JointEdge, Sweep, Transform,
-    Vec2, World,
+    contact::ContactEdge, fixture::Fixture, joint::JointEdge, world::World,
+    Sweep, Transform, Vec2, Rot,
 };
 
 /// The body type.
@@ -11,7 +11,7 @@ use super::{
 /// - kinematic: zero mass, non-zero velocity set by user, moved by solver
 /// - dynamic: positive mass,non-zero velocity determined by forces, moved by
 /// solver
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BodyType {
     Static,
     Kinematic,
@@ -84,7 +84,7 @@ impl BodyDef {
 }
 
 bitflags! {
-    struct BodyFlags: u16 {
+    pub struct BodyFlags: u16 {
         const ISLAND = 0x0001;
         const AWAKE = 0x0002;
         const AUTOSLEEP = 0x0004;
@@ -197,7 +197,35 @@ impl Body {
 
         body
     }
-}
+
+    pub fn is_awake(&self) -> bool {
+        (self.flags & BodyFlags::AWAKE) == BodyFlags::AWAKE
+    }
+
+    pub fn is_active(&self) -> bool {
+        (self.flags & BodyFlags::ACTIVE) == BodyFlags::ACTIVE
+    }
+
+    pub fn is_fixed_rotation(&self) -> bool {
+        (self.flags & BodyFlags::FIXED_ROTATION) == BodyFlags::FIXED_ROTATION
+    }
+
+    pub fn synchronize_fixtures(&mut self) {
+        let broad_phase = &self.world.contact_manager.broad_phase;
+        if self.is_awake() {
+            let xf1 = Transform::new(
+                self.sweep.c0 - Rot::new(self.sweep.a0) * self.sweep.local_center,
+                self.sweep.a0,
+            );
+            for fixture in self.fixture_list.iter_mut() {
+                fixture.synchronize(broad_phase, &xf1, &self.xf);
+            }
+        } else {
+            for fixture in self.fixture_list.iter_mut() {
+                fixture.synchronize(broad_phase, &self.xf, &self.xf);
+            }
+        }
+    }
 
 // impl PartialEq for Body {
 //     #[inline(always)]

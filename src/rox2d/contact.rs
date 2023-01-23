@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+use bitflags::bitflags;
+
 use super::{collision::Manifold, fixture::Fixture, Body};
 
 #[derive(Debug, Clone)]
@@ -8,6 +10,17 @@ pub struct ContactEdge {
     contact: Rc<Contact>,
     prev: Option<Rc<ContactEdge>>,
     next: Option<Rc<ContactEdge>>,
+}
+
+bitflags! {
+    pub struct ContactFlags: u32 {
+        const ISLAND     = 0x0001;
+        const TOUCHING   = 0x0002;
+        const ENABLED    = 0x0004;
+        const FILTER     = 0x0008;
+        const BULLET_HIT = 0x0010;
+        const TOI        = 0x0020;
+    }
 }
 
 #[derive(Debug, Clone)]

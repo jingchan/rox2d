@@ -1,10 +1,13 @@
-use super::{body::Body, joint::Joint, math::Vec2, BodyDef};
+use super::{
+    body::Body, contact::ContactFlags, joint::Joint, time_step::TimeStep,
+    BodyFlags, BodyType, Vec2,
+};
 
 #[derive(Debug, Clone)]
 pub struct World {
     // block_allocator: BlockAllocator,
     // stack_allocator: StackAllocator,
-    // contact_manager: ContactManager,
+    pub contact_manager: ContactManager,
     bodies: Vec<Body>,
     joints: Vec<Joint>,
 
@@ -28,9 +31,7 @@ pub struct World {
     sub_stepping: bool,
 
     step_complete: bool,
-
     // profile: Profile,
-    body_count: usize,
 }
 
 impl World {
@@ -38,167 +39,182 @@ impl World {
     pub const WARM_STARTING: bool = true;
     pub const POSITION_CORRECTION: bool = true;
 
-    pub fn new(gravity: Vec2) -> World {}
-
-    fn create_body(&self, def: &BodyDef) -> usize {
-        let body_id = self.body_count;
-
-        let body = Body::new(def);
-        body.id = body_id;
-
-        self.bodies.push(body);
-        self.body_count += 1;
-
-        body_id
-    }
-
-    pub fn destroy_body(&mut self, body_id: usize) {
-        self.bodies.remove(body_id);
-
-        // TODO: Iteratively destroy all joints, contacts, and fixtures and bodies attached to the body.
-    }
-
-    pub fn get_body(&mut self, body_id: usize) -> Option<&Body> {
-        self.bodies.get(body_id)
-    }
-
-    /// TODO: Take a joint definition instead of a joint.
-    pub fn create_joint(&mut self, body1: usize, body2: usize, joint: Joint) {
-        self.joints.push((body1, body2, joint));
-    }
-
-    /// TODO:
-    pub fn destroy_joint(joint: &Joint) {
-        todo!()
-    }
-
-    pub fn clear(&mut self) {
-        self.bodies.clear();
-        self.joints.clear();
-        self.arbiters.clear();
-    }
-
-    fn broad_phase(&mut self) {
-        // 	O(n^2) broad-phase
-        for i in 0..self.bodies.len() {
-            let bi = &self.bodies[i];
-
-            for j in i + 1..self.bodies.len() {
-                let bj = &self.bodies[j];
-
-                if bi.inv_mass == 0.0 && bj.inv_mass == 0.0 {
-                    continue;
-                }
-
-                let new_arb = Arbiter::new(bi, bj);
-                let key = ArbiterKey::new(bi.id, bj.id);
-
-                if new_arb.num_contacts > 0 {
-                    if let Some(arb) = self.arbiters.get_mut(&key) {
-                        arb.update(&new_arb.contacts, new_arb.num_contacts);
-                    } else {
-                        self.arbiters.insert(key, new_arb);
-                    }
-                } else {
-                    self.arbiters.remove(&key);
-                }
-            }
-        }
-    }
-
-    /// TODO: Separate velocity and position interation.
-    pub fn step(&mut self, dt: f32, iterations: usize) {
-        // If new fixtures were added, we need to find the new contacts.
-        // if (self.has_new_contacts) {
-        //     self.contact_manager.find_new_contacts();
-        //     self.has_new_contacts = false;
-        // }
-
-        let inv_dt = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-
-        // Determine overlapping bodies and update contact points.
-        self.broad_phase();
-
-        // Integrate forces
-        for body in &mut self.bodies {
-            if body.inv_mass == 0.0 {
-                continue;
-            }
-
-            body.velocity += (self.gravity + body.inv_mass * body.force) * dt;
-            body.angular_velocity += body.inv_inertia * body.torque * dt;
-        }
-
-        // Perform pre-steps.
-        for (key, arb) in self.arbiters.iter_mut() {
-            let [body1, body2] =
-                self.bodies.get_many_mut([key.body1, key.body2]).unwrap();
-            arb.pre_step(body1, body2, inv_dt);
-        }
-
-        for (body1, body2, joint) in &mut self.joints {
-            let [body1, body2] =
-                self.bodies.get_many_mut([*body1, *body2]).unwrap();
-            joint.pre_step(body1, body2, inv_dt);
-        }
-
-        // Perform iterations
-        for _ in 0..iterations {
-            for (key, arb) in self.arbiters.iter_mut() {
-                let [body1, body2] =
-                    self.bodies.get_many_mut([key.body1, key.body2]).unwrap();
-                arb.apply_impulse(body1, body2);
-            }
-
-            for (body1, body2, joint) in &mut self.joints {
-                let [body1, body2] =
-                    self.bodies.get_many_mut([*body1, *body2]).unwrap();
-                joint.apply_impulse(body1, body2);
-            }
-        }
-
-        // Integrate velocities
-        for body in &mut self.bodies {
-            body.position += dt * body.velocity;
-            body.rotation += dt * body.angular_velocity;
-
-            body.force = Vec2::ZERO;
-            body.torque = 0.0;
-        }
-    }
-    fn clear_forces() {
-        todo!()
-    }
-}
-
-impl Default for World {
-    fn default() -> Self {
+    pub fn new(gravity: Vec2, contact_manager: ContactManager) -> Self {
         Self {
-            destruction_listener: None,
-            debug_draw: None,
-
+            contact_manager: ContactManager::new(),
             bodies: Vec::new(),
             joints: Vec::new(),
-
-            warm_starting: true,
-            continuous_physics: true,
-            sub_stepping: false,
-
-            step_complete: true,
-
+            gravity,
             allow_sleep: true,
-            gravity: Vec2::ZERO,
-
+            inv_dt0: 0.0,
             new_contacts: false,
             locked: false,
             clear_forces: true,
-
-            inv_dt0: 0.0,
-
-            // block_allocator: BlockAllocator::new(),
-
-            // profile: Profile::default(),
-            body_count: 0,
+            warm_starting: true,
+            continuous_physics: true,
+            sub_stepping: false,
+            step_complete: true,
         }
+    }
+
+    pub fn solve(&mut self, step: &TimeStep) {
+        // let timer = Timer::new();
+
+        // Size the island for the worst case.
+        let mut island = Island::new(
+            self.bodies.len(),
+            self.joints.len(),
+            // &mut self.stack_allocator,
+            &mut self.contact_manager.contact_listener,
+        );
+
+        // Clear all the island flags.
+        for body in &mut self.bodies {
+            body.flags &= !BodyFlags::ISLAND;
+        }
+        for contact in &mut self.contact_manager.contacts {
+            contact.flags &= !ContactFlags::ISLAND;
+        }
+        for joint in &mut self.joints {
+            joint.island_flag = false;
+        }
+
+        // Build and simulate all awake islands.
+        let mut stack_size = self.bodies.len();
+        let mut stack = self.stack_allocator.allocate(stack_size);
+        for seed in &mut self.bodies {
+            if seed.flags & BodyFlags::ISLAND != BodyFlags::empty() {
+                continue;
+            }
+
+            if !seed.is_awake() || !seed.is_active() {
+                continue;
+            }
+
+            // The seed can be dynamic or kinematic.
+            if seed.body_type == BodyType::Static {
+                continue;
+            }
+
+            // Reset island and stack.
+            island.clear();
+            let mut stack_count = 0;
+            stack[stack_count] = seed;
+            stack_count += 1;
+            seed.flags |= BodyFlags::ISLAND;
+
+            // Perform a depth first search (DFS) on the constraint graph.
+            while stack_count > 0 {
+                // Grab the next body off the stack and add it to the island.
+                let b = stack[stack_count - 1];
+                stack_count -= 1;
+                island.add(b);
+
+                // Make sure the body is awake (without resetting sleep timer).
+                b.flags |= BodyFlags::AWAKE;
+
+                // To keep islands as small as possible, we don't
+                // propagate islands across static bodies.
+                if b.body_type == BodyType::Static {
+                    continue;
+                }
+
+                // Search all contacts connected to this body.
+                for ce in &b.contact_edges {
+                    let contact = ce.contact;
+
+                    // Has this contact already been added to an island?
+                    if contact.flags & ContactFlags::ISLAND != 0 {
+                        continue;
+                    }
+
+                    // Is this contact solid and touching?
+                    if !contact.is_enabled() || !contact.is_touching() {
+                        continue;
+                    }
+
+                    // Skip sensors.
+                    let sensor_a = contact.fixture_a.is_sensor();
+                    let sensor_b = contact.fixture_b.is_sensor();
+                    if sensor_a || sensor_b {
+                        continue;
+                    }
+
+                    island.add(contact);
+                    contact.flags |= ContactFlags::ISLAND;
+
+                    let other = ce.other;
+
+                    // Was the other body already added to this island?
+                    if other.flags & BodyFlags::ISLAND != 0 {
+                        continue;
+                    }
+
+                    assert!(stack_count < stack_size);
+                    stack[stack_count] = other;
+                    stack_count += 1;
+                    other.flags |= BodyFlags::ISLAND;
+
+                    // Search all joints connect to this body.
+                    for je in &b.joint_edges {
+                        if je.joint.island_flag {
+                            continue;
+                        }
+
+                        let other = je.other;
+
+                        // Don't simulate joints connected to inactive bodies.
+                        if other.is_enabled() == false {
+                            continue;
+                        }
+
+                        island.add(je.joint);
+                        je.joint.island_flag = true;
+
+                        if other.flags & BodyFlags::ISLAND != 0 {
+                            continue;
+                        }
+
+                        assert!(stack_count < stack_size);
+                        stack[stack_count] = other;
+                        stack_count += 1;
+                        other.flags |= BodyFlags::ISLAND;
+                    }
+                }
+
+                island.solve(step, &self.gravity, self.allow_sleep);
+
+                // Post solve cleanup.
+                for i in 0..island.body_count {
+                    // Allow static bodies to participate in other islands.
+                    let b = island.bodies[i];
+                    if b.body_type == BodyType::Static {
+                        b.flags &= !BodyFlags::ISLAND;
+                    }
+                }
+            }
+        }
+
+        // self.stack_allocator.free(stack, stack_size);
+
+        // let timer = timer::Timer::new();
+        // Synchronize fixtures, check for out of range bodies.
+        for b in &mut self.bodies {
+            // If a body was not in an island then it did not move.
+            if b.flags & BodyFlags::ISLAND == BodyFlags::empty() {
+                continue;
+            }
+
+            if b.body_type == BodyType::Static {
+                continue;
+            }
+
+            // Update fixtures (for broad-phase).
+            b.synchronize_fixtures();
+        }
+
+        // Look for new contacts.
+        self.contact_manager.find_new_contacts();
+        // profile.broadphase = timer.elapsed();
     }
 }

@@ -21,6 +21,24 @@ impl Vec2 {
         Self { x: value, y: value }
     }
 
+    #[inline(always)]
+    pub const fn get(&self, index: usize) -> f32 {
+        match index {
+            0 => self.x,
+            1 => self.y,
+            _ => panic!("index out of bounds"),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn get_mut(&mut self, index: usize) -> &mut f32 {
+        match index {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            _ => panic!("index out of bounds"),
+        }
+    }
+
     #[inline]
     pub fn length(&self) -> f32 {
         self.x.hypot(self.y)
@@ -86,6 +104,27 @@ impl Vec2 {
             x: self.x.abs(),
             y: self.y.abs(),
         }
+    }
+
+    #[inline]
+    pub fn min(&self, other: Self) -> Self {
+        Self {
+            x: self.x.min(other.x),
+            y: self.y.min(other.y),
+        }
+    }
+
+    #[inline]
+    pub fn max(&self, other: Self) -> Self {
+        Self {
+            x: self.x.max(other.x),
+            y: self.y.max(other.y),
+        }
+    }
+
+    #[inline]
+    pub fn clamp(&self, min: Self, max: Self) -> Self {
+        self.max(min).min(max)
     }
 }
 
@@ -322,6 +361,22 @@ impl Mat2x2 {
             col2: self.col2.abs(),
         }
     }
+
+    #[inline]
+    pub fn min(&self, other: Self) -> Self {
+        Self {
+            col1: self.col1.min(other.col1),
+            col2: self.col2.min(other.col2),
+        }
+    }
+
+    #[inline]
+    pub fn max(&self, other: Self) -> Self {
+        Self {
+            col1: self.col1.max(other.col1),
+            col2: self.col2.max(other.col2),
+        }
+    }
 }
 
 impl Add for Mat2x2 {
@@ -528,6 +583,14 @@ impl Transform {
             p: q_inv * (t.p - self.p),
             q: q_inv * t.q,
         }
+    }
+}
+
+impl Mul<Vec2> for Transform {
+    type Output = Vec2;
+    #[inline]
+    fn mul(self, other: Vec2) -> Vec2 {
+        self.mul_vec2(other)
     }
 }
 
