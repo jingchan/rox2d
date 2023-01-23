@@ -95,9 +95,14 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BodyHandle(pub usize);
+
 /// A rigid body. These are created via `World::create_body`.
 #[derive(Debug, Clone)]
 pub struct Body {
+    pub body_handle: BodyHandle,
+
     pub body_type: BodyType,
     pub flags: BodyFlags,
 
@@ -141,6 +146,7 @@ impl Body {
     #[inline(always)]
     pub fn new(def: &BodyDef, world: &World) -> Self {
         let mut body = Body {
+            body_handle,
             body_type: def.body_type,
             flags: BodyFlags::ACTIVE,
             island_index: 0,

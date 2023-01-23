@@ -1,3 +1,5 @@
+use crate::{BodyDef, BodyHandle};
+
 use super::{
     body::Body, contact::ContactFlags, joint::Joint, time_step::TimeStep,
     BodyFlags, BodyType, Vec2,
@@ -216,5 +218,18 @@ impl World {
         // Look for new contacts.
         self.contact_manager.find_new_contacts();
         // profile.broadphase = timer.elapsed();
+    }
+
+    pub fn create_body(&mut self, body_def: &BodyDef) -> Otion<BodyHandle> {
+        assert!(self.is_locked() == false);
+        if self.is_locked() {
+            return None;
+        }
+
+        let mut b = Body::new(body_def);
+        let handle = BodyHandle::new(self.bodies.len());
+        b.handle = handle;
+        self.bodies.push(b);
+        Some(handle)
     }
 }
