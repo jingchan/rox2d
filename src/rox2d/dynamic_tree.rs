@@ -1,5 +1,8 @@
+use crate::common::AABB_EXTENSION;
+
 use super::{collision::Aabb, Vec2};
 
+#[derive(Debug, Clone)]
 enum TreeNodeConnection {
     None,
     /// Tree mode.
@@ -9,10 +12,11 @@ enum TreeNodeConnection {
 }
 
 /// A node in the dynamic tree. The client does not interact with this directly.
+#[derive(Debug, Clone)]
 pub struct TreeNode {
     aabb: Aabb,
     // user_data: Option<Box<dyn std::any::Any>>,
-    connection: TreeNodeConnection,
+    parent: TreeNodeConnection,
 
     child1: Option<usize>,
     child2: Option<usize>,
@@ -35,12 +39,13 @@ impl TreeNode {
 /// object to move by small amounts without triggering a tree update.
 ///
 /// Nodes are pooled and relocatable, so we use node indices rather than pointers.
+#[derive(Debug, Clone)]
 pub struct DynamicTree {
     root: Option<usize>,
     nodes: Vec<TreeNode>,
     // node_count: usize,
     // node_capacity: usize,
-    free_list: Vec<usize>,
+    free_list: Vec<TreeNode>,
     insertion_count: usize,
 }
 
@@ -50,7 +55,7 @@ impl DynamicTree {
         for i in 0..nodes.capacity() - 1 {
             nodes.push(TreeNode {
                 aabb: Aabb::default(),
-                connection: TreeNodeConnection::Next(i + 1),
+                parent: TreeNodeConnection::Next(i + 1),
                 child1: None,
                 child2: None,
                 height: -1,
@@ -59,7 +64,7 @@ impl DynamicTree {
         }
         nodes.push(TreeNode {
             aabb: Aabb::default(),
-            connection: TreeNodeConnection::None,
+            parent: TreeNodeConnection::None,
             child1: None,
             child2: None,
             height: -1,
@@ -77,27 +82,31 @@ impl DynamicTree {
         }
     }
 
-    // b2DynamicTree::b2DynamicTree()
-    // {
-    // 	m_root = b2_nullNode;
+    // Create a proxy in the tree as a leaf node. We return the index
+    // of the node instead of a pointer so that we can grow
+    // the node pool.
+    // pub fn create_proxy(&mut self, aabb: &Aabb, user_data: usize) -> usize {
+    pub fn create_proxy(&mut self, aabb: &Aabb) -> usize {
+        // Fatten the aabb.
+        let r = Vec2::new(AABB_EXTENSION, AABB_EXTENSION);
 
-    // 	m_nodeCapacity = 16;
-    // 	m_nodeCount = 0;
-    // 	m_nodes = (b2TreeNode*)b2Alloc(m_nodeCapacity * sizeof(b2TreeNode));
-    // 	memset(m_nodes, 0, m_nodeCapacity * sizeof(b2TreeNode));
+        let proxy_id = self.nodes.len();
+        self.nodes.push(TreeNode {
+            aabb: Aabb {
+                lower_bound: aabb.lower_bound - r,
+                upper_bound: aabb.upper_bound + r,
+            },
+            parent: TreeNodeConnection::None,
+            child1: None,
+            child2: None,
+            height: 0,
+            moved: true,
+        });
 
-    // 	// Build a linked list for the free list.
-    // 	for (int32 i = 0; i < m_nodeCapacity - 1; ++i)
-    // 	{
-    // 		m_nodes[i].next = i + 1;
-    // 		m_nodes[i].height = -1;
-    // 	}
-    // 	m_nodes[m_nodeCapacity-1].next = b2_nullNode;
-    // 	m_nodes[m_nodeCapacity-1].height = -1;
-    // 	m_freeList = 0;
+        self.insert_leaf(proxy_id);
 
-    // 	m_insertionCount = 0;
-    // }
+        proxy_id
+    }
 
     pub fn move_proxy(
         &mut self,
@@ -147,7 +156,7 @@ impl DynamicTree {
 
         if self.root.is_none() {
             self.root = Some(leaf);
-            self.nodes[leaf].connection = TreeNodeConnection::None;
+            self.nodes[leaf].parent = TreeNodeConnection::None;
             return;
         }
 
@@ -207,7 +216,7 @@ impl DynamicTree {
         let sibling = index;
 
         // Create a new parent.
-        let old_parent = self.nodes[sibling].connection;
+        let old_parent = self.nodes[sibling].parent;
         let new_parent = self.allocate_node();
         self.nodes[new_parent].connection = old_parent;
         self.nodes[new_parent].aabb =
@@ -224,24 +233,24 @@ impl DynamicTree {
 
             self.nodes[new_parent].child1 = sibling;
             self.nodes[new_parent].child2 = leaf;
-            self.nodes[sibling].connection =
+            self.nodes[sibling].parent =
                 TreeNodeConnection::Parent(new_parent);
-            self.nodes[leaf].connection =
+            self.nodes[leaf].parent =
                 TreeNodeConnection::Parent(new_parent);
         } else {
             // The sibling was the root.
             self.nodes[new_parent].child1 = sibling;
             self.nodes[new_parent].child2 = leaf;
-            self.nodes[sibling].connection =
+            self.nodes[sibling].parent =
                 TreeNodeConnection::Parent(new_parent);
-            self.nodes[leaf].connection =
+            self.nodes[leaf].parent =
                 TreeNodeConnection::Parent(new_parent);
             self.root = Some(new_parent);
         }
 
         // Walk back up the tree fixing heights and AABBs
-        let mut index = self.nodes[leaf].connection;
-        while let TreeNodeConnection::Parent(index) = index {
+        let mut connection = self.nodes[leaf].parent;
+        while let TreeNodeConnection::Parent(index) = connection {
             index = self.balance(index);
 
             let child1 = self.nodes[index].child1.unwrap();
@@ -252,73 +261,70 @@ impl DynamicTree {
             self.nodes[index].aabb =
                 self.nodes[child1].aabb.combine(&self.nodes[child2].aabb);
 
-            index = match self.nodes[index].connection {
-                TreeNodeConnection::Parent(index) => index,
-                _ => panic!("No parent found"),
-            };
+            connection = self.nodes[index].parent;
         }
 
         //self.validate();
     }
 
-    // void b2DynamicTree::RemoveLeaf(int32 leaf)
-    // {
-    // 	if (leaf == m_root)
-    // 	{
-    // 		m_root = b2_nullNode;
-    // 		return;
-    // 	}
+    pub fn remove_leaf(&mut self, leaf: usize) {
+        if self.root == Some(leaf){
+            self.root = None;
+            return;
+        }
 
-    // 	int32 parent = m_nodes[leaf].parent;
-    // 	int32 grandParent = m_nodes[parent].parent;
-    // 	int32 sibling;
-    // 	if (m_nodes[parent].child1 == leaf)
-    // 	{
-    // 		sibling = m_nodes[parent].child2;
-    // 	}
-    // 	else
-    // 	{
-    // 		sibling = m_nodes[parent].child1;
-    // 	}
+        let parent = match self.nodes[leaf].parent {
+            TreeNodeConnection::Parent(parent) => parent,
+            _ => panic!("No parent found"),
+        };
+        let sibling = if self.nodes[parent].child1 == Some(leaf) {
+            self.nodes[parent].child2
+        } else {
+            self.nodes[parent].child1
+        };
 
-    // 	if (grandParent != b2_nullNode)
-    // 	{
-    // 		// Destroy parent and connect sibling to grandParent.
-    // 		if (m_nodes[grandParent].child1 == parent)
-    // 		{
-    // 			m_nodes[grandParent].child1 = sibling;
-    // 		}
-    // 		else
-    // 		{
-    // 			m_nodes[grandParent].child2 = sibling;
-    // 		}
-    // 		m_nodes[sibling].parent = grandParent;
-    // 		FreeNode(parent);
+        if let TreeNodeConnection::Parent(grand_parent) =
+            self.nodes[parent].parent
+        {
+            // Destroy parent and connect sibling to grand_parent.
+            if self.nodes[grand_parent].child1 == Some(parent) {
+                self.nodes[grand_parent].child1 = sibling;
+            } else {
+                self.nodes[grand_parent].child2 = sibling;
+            }
+            self.nodes[sibling.unwrap()].parent =
+                TreeNodeConnection::Parent(grand_parent);
+            self.free_node(parent);
 
-    // 		// Adjust ancestor bounds.
-    // 		int32 index = grandParent;
-    // 		while (index != b2_nullNode)
-    // 		{
-    // 			index = Balance(index);
+            // Adjust ancestor bounds.
+            let mut index = grand_parent;
+            while let TreeNodeConnection::Parent(index) = {
+                index = self.balance(index);
 
-    // 			int32 child1 = m_nodes[index].child1;
-    // 			int32 child2 = m_nodes[index].child2;
+                let child1 = self.nodes[index].child1.unwrap();
+                let child2 = self.nodes[index].child2.unwrap();
 
-    // 			m_nodes[index].aabb.Combine(m_nodes[child1].aabb, m_nodes[child2].aabb);
-    // 			m_nodes[index].height = 1 + b2Max(m_nodes[child1].height, m_nodes[child2].height);
+                self.nodes[index].aabb =
+                    self.nodes[child1].aabb.combine(&self.nodes[child2].aabb);
+                self.nodes[index].height = 1 + self.nodes[child1]
+                    .height
+                    .max(self.nodes[child2].height);
 
-    // 			index = m_nodes[index].parent;
-    // 		}
-    // 	}
-    // 	else
-    // 	{
-    // 		m_root = sibling;
-    // 		m_nodes[sibling].parent = b2_nullNode;
-    // 		FreeNode(parent);
-    // 	}
+                index = match self.nodes[index].parent {
+                    TreeNodeConnection::Parent(index) => index,
+                    _ => panic!("No parent found"),
+                };
+            }
+        } else {
+            self.root = sibling;
+            self.free_node(parent);
+            if let Some(sibling) = sibling {
+            self.nodes[sibling].parent = TreeNodeConnection::None;
+            }
+        }
 
-    // 	//Validate();
-    // }
+        //self.validate();
+    }
 
     // Perform a left or right rotation if node A is imbalanced.
     // Returns the new root index.
@@ -344,11 +350,11 @@ impl DynamicTree {
 
             // Swap A and C
             c.child1 = Some(i_a);
-            c.connection = a.connection;
-            a.connection = TreeNodeConnection::Parent(i_c);
+            c.parent = a.parent;
+            a.parent = TreeNodeConnection::Parent(i_c);
 
             // A's old parent should point to C
-            if let TreeNodeConnection::Parent(i_a_parent) = c.connection {
+            if let TreeNodeConnection::Parent(i_a_parent) = c.parent {
                 if self.nodes[i_a_parent].child1 == Some(i_a) {
                     self.nodes[i_a_parent].child1 = Some(i_c);
                 } else {
@@ -362,7 +368,7 @@ impl DynamicTree {
             if f.height > g.height {
                 c.child2 = Some(i_f);
                 a.child2 = Some(i_g);
-                g.connection = TreeNodeConnection::Parent(i_a);
+                g.parent = TreeNodeConnection::Parent(i_a);
                 a.aabb = b.aabb.combine(&g.aabb);
                 c.aabb = a.aabb.combine(&f.aabb);
 
@@ -371,7 +377,7 @@ impl DynamicTree {
             } else {
                 c.child2 = Some(i_g);
                 a.child2 = Some(i_f);
-                f.connection = TreeNodeConnection::Parent(i_a);
+                f.parent = TreeNodeConnection::Parent(i_a);
                 a.aabb = b.aabb.combine(&f.aabb);
                 c.aabb = a.aabb.combine(&g.aabb);
 
@@ -391,11 +397,11 @@ impl DynamicTree {
 
             // Swap A and B
             b.child1 = Some(i_a);
-            b.connection = a.connection;
-            a.connection = TreeNodeConnection::Parent(i_b);
+            b.parent = a.parent;
+            a.parent = TreeNodeConnection::Parent(i_b);
 
             // A's old parent should point to B
-            if let TreeNodeConnection::Parent(i_a_parent) = b.connection {
+            if let TreeNodeConnection::Parent(i_a_parent) = b.parent {
                 if self.nodes[i_a_parent].child1 == Some(i_a) {
                     self.nodes[i_a_parent].child1 = Some(i_b);
                 } else {
@@ -409,7 +415,7 @@ impl DynamicTree {
             if d.height > e.height {
                 b.child2 = Some(i_d);
                 a.child1 = Some(i_e);
-                e.connection = TreeNodeConnection::Parent(i_a);
+                e.parent = TreeNodeConnection::Parent(i_a);
                 a.aabb = c.aabb.combine(&e.aabb);
                 b.aabb = a.aabb.combine(&d.aabb);
 
@@ -418,7 +424,7 @@ impl DynamicTree {
             } else {
                 b.child2 = Some(i_e);
                 a.child1 = Some(i_d);
-                d.connection = TreeNodeConnection::Parent(i_a);
+                d.parent = TreeNodeConnection::Parent(i_a);
                 a.aabb = c.aabb.combine(&d.aabb);
                 b.aabb = a.aabb.combine(&e.aabb);
 
@@ -430,5 +436,32 @@ impl DynamicTree {
         }
 
         i_a
+    }
+
+    pub fn free_node(&mut self, index: usize) {
+        let node = self.nodes.remove(index);
+        node.parent = TreeNodeConnection::None;
+        node.height = -1;
+        self.free_list.push(node);
+    }
+
+    pub fn query(&self, aabb: Aabb, mut callback: impl FnMut(usize)) {
+        let mut stack = Vec::new();
+        stack.push(self.root);
+
+        while let Some(index) = stack.pop() {
+            if let Some(index) = index {
+                let node = &self.nodes[index];
+
+                if node.aabb.overlaps(aabb) {
+                    if node.is_leaf() {
+                        callback(index);
+                    } else {
+                        stack.push(node.child1);
+                        stack.push(node.child2);
+                    }
+                }
+            }
+        }
     }
 }

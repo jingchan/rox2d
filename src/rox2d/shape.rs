@@ -1,6 +1,8 @@
 use std::default;
 
-use super::{collision::Aabb, Transform, Vec2};
+use crate::common::Transform;
+
+use super::{collision::Aabb};
 
 /// This characterizes how forces get applied.
 #[derive(Debug, Default, Clone, Copy)]
@@ -30,36 +32,41 @@ pub struct Shape {
     pub shape_type: ShapeType,
     pub radius: f32,
     pub mass_data: MassData,
+    pub count: usize,
 }
 
 impl Shape {
-    pub fn compute_aabb(
-        &self,
-        aabb: &mut Aabb,
-        xf: &Transform,
-        child_index: usize,
-    ) {
+    pub fn compute_aabb(&self, xf: &Transform, child_index: usize) -> Aabb {
         match self.shape_type {
             ShapeType::Circle => {
                 let circle = self as *const Shape as *const CircleShape;
                 let circle = unsafe { &*circle };
-                circle.compute_aabb(aabb, xf, child_index);
+                circle.compute_aabb(xf, child_index)
             }
             ShapeType::Edge => {
                 let edge = self as *const Shape as *const EdgeShape;
                 let edge = unsafe { &*edge };
-                edge.compute_aabb(aabb, xf, child_index);
+                edge.compute_aabb(xf, child_index)
             }
             ShapeType::Polygon => {
                 let polygon = self as *const Shape as *const PolygonShape;
                 let polygon = unsafe { &*polygon };
-                polygon.compute_aabb(aabb, xf, child_index);
+                polygon.compute_aabb(xf, child_index)
             }
             ShapeType::Chain => {
                 let chain = self as *const Shape as *const ChainShape;
                 let chain = unsafe { &*chain };
-                chain.compute_aabb(aabb, xf, child_index);
+                chain.compute_aabb(xf, child_index)
             }
+        }
+    }
+
+    pub fn child_count(&self) -> usize {
+        match self.shape_type {
+            ShapeType::Circle => 1,
+            ShapeType::Edge => 1,
+            ShapeType::Polygon => 1,
+            ShapeType::Chain => self.count - 1,
         }
     }
 }
@@ -72,15 +79,12 @@ pub struct CircleShape {
 }
 
 impl CircleShape {
-    pub fn compute_aabb(
-        &self,
-        aabb: &mut Aabb,
-        xf: &Transform,
-        child_index: usize,
-    ) {
+    pub fn compute_aabb(&self, xf: &Transform, child_index: usize) -> Aabb {
         let p = xf * self.position;
-        aabb.lower_bound = p - Vec2::new(self.shape.radius, self.shape.radius);
-        aabb.upper_bound = p + Vec2::new(self.shape.radius, self.shape.radius);
+        Aabb {
+            lower_bound: p - Vec2::new(self.shape.radius, self.shape.radius),
+            upper_bound: p + Vec2::new(self.shape.radius, self.shape.radius),
+        }
     }
 }
 
@@ -105,17 +109,14 @@ pub struct EdgeShape {
 }
 
 impl EdgeShape {
-    pub fn compute_aabb(
-        &self,
-        aabb: &mut Aabb,
-        xf: &Transform,
-        child_index: usize,
-    ) {
+    pub fn compute_aabb(&self, xf: &Transform, child_index: usize) -> Aabb {
         let v1 = *xf * self.vertex1;
         let v2 = *xf * self.vertex2;
 
-        aabb.lower_bound = v1.min(v2);
-        aabb.upper_bound = v1.max(v2);
+        Aabb {
+            lower_bound: v1.min(v2),
+            upper_bound: v1.max(v2),
+        }
     }
 }
 
@@ -130,12 +131,7 @@ pub struct PolygonShape {
 }
 
 impl PolygonShape {
-    pub fn compute_aabb(
-        &self,
-        aabb: &mut Aabb,
-        xf: &Transform,
-        child_index: usize,
-    ) {
+    pub fn compute_aabb(&self, xf: &Transform, child_index: usize) -> Aabb {
         let lower = xf * self.vertices[0];
         let upper = lower;
 
@@ -146,8 +142,10 @@ impl PolygonShape {
         }
 
         let r = Vec2::new(self.shape.radius, self.shape.radius);
-        aabb.lower_bound = lower - r;
-        aabb.upper_bound = upper + r;
+        Aabb {
+            lower_bound: lower - r,
+            upper_bound: upper + r,
+        }
     }
 }
 
@@ -167,12 +165,7 @@ pub struct ChainShape {
 }
 
 impl ChainShape {
-    pub fn compute_aabb(
-        &self,
-        aabb: &mut Aabb,
-        xf: &Transform,
-        child_index: usize,
-    ) {
+    pub fn compute_aabb(&self, xf: &Transform, child_index: usize) -> Aabb {
         let lower = xf * self.vertices[0];
         let upper = lower;
 
@@ -183,7 +176,10 @@ impl ChainShape {
         }
 
         let r = Vec2::new(self.shape.radius, self.shape.radius);
-        aabb.lower_bound = lower - r;
-        aabb.upper_bound = upper + r;
+
+        Aabb {
+            lower_bound: lower - r,
+            upper_bound: upper + r,
+        }
     }
 }

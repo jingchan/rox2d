@@ -1,10 +1,13 @@
 use bitflags::bitflags;
-use std::cmp::Ordering;
 
-use super::{
-    contact::ContactEdge, fixture::Fixture, joint::JointEdge, world::World,
-    Sweep, Transform, Vec2, Rot,
+use crate::{
+    broad_phase::BroadPhase,
+    common::{Rot, Sweep, Transform, Vec2},
+    fixture::FixtureDef,
+    joint::JointEdge,
 };
+
+use super::{contact::ContactEdge, fixture::Fixture, world::World};
 
 /// The body type.
 /// - static: zero mass, zero velocity, may be manually moved
@@ -95,14 +98,9 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BodyHandle(pub usize);
-
 /// A rigid body. These are created via `World::create_body`.
 #[derive(Debug, Clone)]
 pub struct Body {
-    pub body_handle: BodyHandle,
-
     pub body_type: BodyType,
     pub flags: BodyFlags,
 
@@ -117,13 +115,13 @@ pub struct Body {
     pub force: Vec2,
     pub torque: f32,
 
-    pub world: World,
+    // pub world: World,
     pub prev: Option<Box<Body>>,
     pub next: Option<Box<Body>>,
 
-    pub fixture_list: Option<Fixture>,
-    pub fixture_count: i32,
-
+    pub fixtures: Vec<Fixture>,
+    // pub fixture_list: Option<Fixture>,
+    // pub fixture_count: i32,
     pub joint_list: Option<JointEdge>,
     pub contact_list: Option<ContactEdge>,
 
@@ -144,9 +142,9 @@ pub struct Body {
 
 impl Body {
     #[inline(always)]
-    pub fn new(def: &BodyDef, world: &World) -> Self {
+    // pub fn new(def: &BodyDef, world: &World) -> Self {
+    pub fn new(def: &BodyDef) -> Self {
         let mut body = Body {
-            body_handle,
             body_type: def.body_type,
             flags: BodyFlags::ACTIVE,
             island_index: 0,
@@ -156,11 +154,14 @@ impl Body {
             angular_velocity: def.angular_velocity,
             force: Vec2::ZERO,
             torque: 0.0,
-            world: world.clone(),
+            // Notes: Circular reference here to world, we should get rid of
+            // this, but try to see if it's used anywhere.
+            // world: world.clone(),
             prev: None,
             next: None,
-            fixture_list: None,
-            fixture_count: 0,
+            fixtures: Vec::new(),
+            // fixture_list: None,
+            // fixture_count: 0,
             joint_list: None,
             contact_list: None,
             mass: 0.0,
@@ -216,11 +217,11 @@ impl Body {
         (self.flags & BodyFlags::FIXED_ROTATION) == BodyFlags::FIXED_ROTATION
     }
 
-    pub fn synchronize_fixtures(&mut self) {
-        let broad_phase = &self.world.contact_manager.broad_phase;
+    pub fn synchronize_fixtures(&mut self, broad_phase: &mut BroadPhase) {
         if self.is_awake() {
             let xf1 = Transform::new(
-                self.sweep.c0 - Rot::new(self.sweep.a0) * self.sweep.local_center,
+                self.sweep.c0
+                    - Rot::new(self.sweep.a0) * self.sweep.local_center,
                 self.sweep.a0,
             );
             for fixture in self.fixture_list.iter_mut() {
@@ -233,19 +234,60 @@ impl Body {
         }
     }
 
-// impl PartialEq for Body {
-//     #[inline(always)]
-//     fn eq(&self, other: &Self) -> bool {
-//         self.id == other.id
-//     }
-// }
+    pub fn create_fixture(
+        &mut self,
+        world: &World,
+        def: &FixtureDef,
+    ) -> Option<&Fixture> {
+        assert!(world.is_locked() == false);
+        if world.is_locked() {
+            return None;
+        }
 
-// impl PartialOrd for Body {
-//     #[inline(always)]
-//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-//         Some(self.id.cmp(&other.id))
-//     }
-// }
+        // let mut allocator = &world.block_allocator;
+
+        // let memory = allocator.allocate(std::mem::size_of::<Fixture>());
+        // let fixture = unsafe { std::mem::transmute::<*mut u8, &mut Fixture>(memory) };
+        // fixture.create(allocator, self, def);
+        let fixture = Fixture::new(def);
+
+        if self.is_active() {
+            let broad_phase = &mut world.contact_manager.broad_phase;
+            fixture.create_proxies(broad_phase, &self.xf);
+        }
+
+        self.fixtures.push(fixture);
+    }
+
+    // This is used to prevent connected bodies from colliding.
+    // It may lie, depending on the collideConnected flag.
+    pub fn should_collide(&self, other: &Body) -> bool {
+        // At least one body should be dynamic.
+        if self.body_type != BodyType::Dynamic
+            && other.body_type != BodyType::Dynamic
+        {
+            return false;
+        }
+
+        // Does a joint prevent collision?
+        for joint_edge in self.joint_list.iter() {
+            if joint_edge.other == other
+                && joint_edge.joint.collide_connected == false
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// TODO: Should we call this set_transform?
+    pub fn synchronize_transform(&self) {
+        self.xf.q.set_angle(self.sweep.a);
+        self.xf.p =
+            self.sweep.c - Rot::new(self.sweep.a) * self.sweep.local_center;
+    }
+}
 
 #[cfg(test)]
 mod tests {

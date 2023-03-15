@@ -1,4 +1,4 @@
-use super::Vec2;
+use crate::common::Vec2;
 
 pub struct TimeStep {
     pub dt: f32,
@@ -9,14 +9,35 @@ pub struct TimeStep {
     pub warm_starting: bool,
 }
 
-pub struct Position {
-    c: Vec2,
-    a: f32,
+impl TimeStep {
+    pub fn new(
+        dt: f32,
+        velocity_iterations: i32,
+        position_iterations: i32,
+        inv_dt0: f32,
+        warm_starting: bool,
+    ) -> Self {
+        TimeStep {
+            dt,
+            inv_dt: if dt > 0.0 { 1.0 / dt } else { 0.0 },
+            dt_ratio: dt * inv_dt0,
+            velocity_iterations,
+            position_iterations,
+            warm_starting,
+        }
+    }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Position {
+    pub c: Vec2,
+    pub a: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct Velocity {
-    v: Vec2,
-    w: f32,
+    pub v: Vec2,
+    pub w: f32,
 }
 
 pub struct SolverData {

@@ -1,18 +1,40 @@
 #![feature(get_many_mut)]
 // use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use ::rox2d::{contact_manager::ContactManager, world::World};
-use rox2d::*;
 
 fn main() {
     let gravity = Vec2::new(0.0, -10.0);
     let contact_manager = ContactManager::new();
     let mut world = World::new(gravity, contact_manager);
 
-    create_ground(&mut world);
-    create_body(&mut world);
+    let ground = create_ground(&mut world);
+    let body = create_body(&mut world);
+
+	// Prepare for simulation. Typically we use a time step of 1/60 of a
+	// second (60Hz) and 10 iterations. This provides a high quality simulation
+	// in most game scenarios.
+    let time_step = 1.0 / 60.0;
+    let velocity_iterations = 6;
+    let position_iterations = 2;
+
+    let position = body.get_position();
+    let angle = body.get_angle();
+
+for i in 0..60 {
+        world.step(time_step, velocity_iterations, position_iterations);
+
+        let position = body.get_position();
+        let angle = body.get_angle();
+
+        println!("{:4.2} {:4.2} {:4.2}", position.x, position.y, angle);
+    }
+
+    assert!(position.x.abs() < 0.01);
+    assert!((position.y - 1.01).abs() < 0.01);
+    assert!(angle.abs() < 0.01);
 }
 
-fn create_ground(world: &mut World) {
+fn create_ground(world: &mut World) -> Body {
     // Define the ground body.
     let mut ground_body_def = BodyDef::new();
     ground_body_def.position = Vec2::new(0.0, -10.0);
@@ -35,9 +57,10 @@ fn create_ground(world: &mut World) {
     ground_fixture_def.density = 0.0;
     ground_fixture_def.friction = 0.3;
     ground_body.create_fixture(&ground_fixture_def);
+
 }
 
-fn create_body(world: &mut World) {
+fn create_body(world: &mut World) -> Body{
     // Define the dynamic body. We set its position and call the body factory.
     let mut body_def = BodyDef::new();
     body_def.body_type = BodyType::Dynamic;

@@ -1,4 +1,4 @@
-use super::{Transform, Vec2};
+use crate::common::{Vec2, Transform};
 
 const MAX_MANIFOLD_POINTS: usize = 2;
 const MAX_POLYGON_VERTICES: usize = 8;

@@ -1,11 +1,14 @@
-use crate::{BodyDef, BodyHandle};
+use crate::{
+    contact_manager::ContactManager, island::Island,
+    stack_allocator::StackAllocator, BodyDef,
+};
 
 use super::{
     body::Body, contact::ContactFlags, joint::Joint, time_step::TimeStep,
     BodyFlags, BodyType, Vec2,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct World {
     // block_allocator: BlockAllocator,
     // stack_allocator: StackAllocator,
@@ -14,7 +17,7 @@ pub struct World {
     joints: Vec<Joint>,
 
     gravity: Vec2,
-    allow_sleep: bool,
+    pub allow_sleep: bool,
 
     // destruction_listener: Option<DestructionListener>,
     // debug_draw: Option<DebugDraw>,
@@ -43,6 +46,7 @@ impl World {
 
     pub fn new(gravity: Vec2, contact_manager: ContactManager) -> Self {
         Self {
+            // stack_allocator: StackAllocator::new(),
             contact_manager: ContactManager::new(),
             bodies: Vec::new(),
             joints: Vec::new(),
@@ -65,9 +69,10 @@ impl World {
         // Size the island for the worst case.
         let mut island = Island::new(
             self.bodies.len(),
+            self.contact_manager.contacts.len(),
             self.joints.len(),
             // &mut self.stack_allocator,
-            &mut self.contact_manager.contact_listener,
+            // &mut self.contact_manager.contact_listener,
         );
 
         // Clear all the island flags.
@@ -212,7 +217,7 @@ impl World {
             }
 
             // Update fixtures (for broad-phase).
-            b.synchronize_fixtures();
+            b.synchronize_fixtures(&mut self.contact_manager.broad_phase);
         }
 
         // Look for new contacts.
@@ -220,16 +225,71 @@ impl World {
         // profile.broadphase = timer.elapsed();
     }
 
-    pub fn create_body(&mut self, body_def: &BodyDef) -> Otion<BodyHandle> {
+    pub fn create_body(&mut self, body_def: &BodyDef) -> Option<&Body> {
         assert!(self.is_locked() == false);
         if self.is_locked() {
             return None;
         }
 
         let mut b = Body::new(body_def);
-        let handle = BodyHandle::new(self.bodies.len());
-        b.handle = handle;
         self.bodies.push(b);
-        Some(handle)
+        Some(&b)
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    pub fn step(
+        &mut self,
+        dt: f32,
+        velocity_iterations: i32,
+        position_iterations: i32,
+    ) {
+        // If new fixtures were added, we need to find the new contacts.
+        if self.new_contacts {
+            self.contact_manager.find_new_contacts();
+            self.new_contacts = false;
+        }
+
+        self.locked = true;
+
+        let step = TimeStep::new(
+            dt,
+            velocity_iterations,
+            position_iterations,
+            self.inv_dt0,
+            self.warm_starting,
+        );
+
+        // Update contacts. This is where some contacts are destroyed.
+        // Describes which fixtures are in touching/overlapping
+        {
+            self.contact_manager.collide();
+        }
+
+        // Integrate velocities, solve velocity constraints, and integrate positions.
+        if self.step_complete && step.dt > 0.0 {
+            self.solve(&step);
+        }
+
+        // Handle TOI events.
+        // TODO: Disabled TOI for now.
+        if self.continuous_physics && step.dt > 0.0 {
+            // self.solve_toi(&step);
+        }
+
+        if step.dt > 0.0 {
+            self.inv_dt0 = step.inv_dt;
+        }
+
+        if self.clear_forces {
+            for b in &mut self.bodies {
+                b.force = Vec2::ZERO;
+                b.torque = 0.0;
+            }
+        }
+
+        self.locked = false;
     }
 }

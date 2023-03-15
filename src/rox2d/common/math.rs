@@ -464,6 +464,13 @@ impl Rot {
         self.s.atan2(self.c)
     }
 
+    /// Set using an angle in radians.
+    #[inline]
+    pub fn set_angle(&mut self, angle: f32) {
+        self.s = angle.sin();
+        self.c = angle.cos();
+    }
+
     /// Get the X-axis
     #[inline]
     pub fn get_x_axis(&self) -> Vec2 {

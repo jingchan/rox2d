@@ -1,3 +1,12 @@
+use crate::{
+    body::{Body, BodyFlags, BodyType},
+    common::{
+        Vec2, ANGULAR_SLEEP_TOLERANCE, LINEAR_SLEEP_TOLERANCE, TIME_TO_SLEEP,
+    },
+    joint::Joint,
+    time_step::{Position, Velocity},
+};
+
 use super::{
     common::{
         MAX_ROTATION, MAX_ROTATION_SQUARED, MAX_TRANSLATION,
@@ -5,39 +14,28 @@ use super::{
     },
     contact::Contact,
     contact_solver::{ContactSolver, ContactSolverDef},
-    joint::Joint,
     time_step::{SolverData, TimeStep},
-    Body, BodyType, Vec2,
 };
 
-pub struct Position {
-    pub c: Vec2,
-    pub a: f32,
-}
-
-pub struct Velocity {
-    pub v: Vec2,
-    pub w: f32,
-}
-
+#[derive(Clone, Copy, Debug)]
 struct IntermediateData {
     pub pos: Position,
     pub vel: Velocity,
 }
 
-struct Island {
+pub struct Island {
     // allocator: &'static mut dyn Allocator,
     // listener: Option<&'static dyn ContactListener>,
-    bodies: Vec<Body>,
-    contacts: Vec<Contact>,
-    joints: Vec<Joint>,
+    pub bodies: Vec<Body>,
+    pub contacts: Vec<Contact>,
+    pub joints: Vec<Joint>,
 
     // Internal ephemeral data
     data: Vec<IntermediateData>,
 }
 
 impl Island {
-    fn new(
+    pub fn new(
         initial_body_capacity: usize,
         initial_contact_capacity: usize,
         initial_joint_capacity: usize,
@@ -63,13 +61,13 @@ impl Island {
         self.joints.push(joint);
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.bodies.clear();
         self.contacts.clear();
         self.joints.clear();
     }
 
-    fn solve(&self, step: TimeStep, gravity: Vec2) {
+    pub fn solve(&self, step: TimeStep, gravity: Vec2, allow_sleep: bool) {
         let h = step.dt;
         for (body, data) in self.bodies.iter_mut().zip(self.data.iter_mut()) {
             let c = body.sweep.c;
@@ -80,7 +78,7 @@ impl Island {
             body.sweep.c0 = body.sweep.c;
             body.sweep.a0 = body.sweep.a;
 
-            if body.ty == BodyType::DYNAMIC {
+            if body.body_type == BodyType::Dynamic {
                 // Integrate velocities.
                 v += h
                     * body.inv_mass
@@ -186,116 +184,74 @@ impl Island {
                 vel: Velocity { v, w },
             };
         }
-        // 	contactSolver.StoreImpulses();
-        // 	profile->solveVelocity = timer.GetMilliseconds();
 
-        // 	// Integrate positions
-        // 	for (int32 i = 0; i < m_bodyCount; ++i)
-        // 	{
-        // 		b2Vec2 c = m_positions[i].c;
-        // 		float a = m_positions[i].a;
-        // 		b2Vec2 v = m_velocities[i].v;
-        // 		float w = m_velocities[i].w;
+        // Solve position constraints
+        let mut position_solved = false;
+        for _ in 0..step.position_iterations {
+            let contacts_ok = contact_solver.solve_position_constraints();
 
-        // 		// Check for large velocities
-        // 		b2Vec2 translation = h * v;
-        // 		if (b2Dot(translation, translation) > b2_maxTranslationSquared)
-        // 		{
-        // 			float ratio = b2_maxTranslation / translation.Length();
-        // 			v *= ratio;
-        // 		}
+            let mut joints_ok = true;
+            for joint in self.joints.iter() {
+                let joint_ok = joint.solve_position_constraints(&solver_data);
+                joints_ok = joints_ok && joint_ok;
+            }
 
-        // 		float rotation = h * w;
-        // 		if (rotation * rotation > b2_maxRotationSquared)
-        // 		{
-        // 			float ratio = b2_maxRotation / b2Abs(rotation);
-        // 			w *= ratio;
-        // 		}
+            if contacts_ok && joints_ok {
+                // Exit early if the position errors are small.
+                position_solved = true;
+                break;
+            }
+        }
 
-        // 		// Integrate
-        // 		c += h * v;
-        // 		a += h * w;
+        // Copy state buffers back to the bodies
+        for (body, data) in self.bodies.iter_mut().zip(self.data.iter_mut()) {
+            body.sweep.c = data.pos.c;
+            body.sweep.a = data.pos.a;
+            body.linear_velocity = data.vel.v;
+            body.angular_velocity = data.vel.w;
+            body.synchronize_transform();
+        }
 
-        // 		m_positions[i].c = c;
-        // 		m_positions[i].a = a;
-        // 		m_velocities[i].v = v;
-        // 		m_velocities[i].w = w;
-        // 	}
+        // self.report(contact_solver.velocity_constraints());
 
-        // 	// Solve position constraints
-        // 	timer.Reset();
-        // 	bool positionSolved = false;
-        // 	for (int32 i = 0; i < step.positionIterations; ++i)
-        // 	{
-        // 		bool contactsOkay = contactSolver.SolvePositionConstraints();
+        if allow_sleep {
+            let min_sleep_time = f32::MAX;
 
-        // 		bool jointsOkay = true;
-        // 		for (int32 j = 0; j < m_jointCount; ++j)
-        // 		{
-        // 			bool jointOkay = m_joints[j]->SolvePositionConstraints(solverData);
-        // 			jointsOkay = jointsOkay && jointOkay;
-        // 		}
+            let mut lin_tol_sqr =
+                LINEAR_SLEEP_TOLERANCE * LINEAR_SLEEP_TOLERANCE;
+            let mut ang_tol_sqr =
+                ANGULAR_SLEEP_TOLERANCE * ANGULAR_SLEEP_TOLERANCE;
 
-        // 		if (contactsOkay && jointsOkay)
-        // 		{
-        // 			// Exit early if the position errors are small.
-        // 			positionSolved = true;
-        // 			break;
-        // 		}
-        // 	}
+            for body in self.bodies.iter() {
+                if body.ty == BodyType::Static {
+                    continue;
+                }
 
-        // 	// Copy state buffers back to the bodies
-        // 	for (int32 i = 0; i < m_bodyCount; ++i)
-        // 	{
-        // 		b2Body* body = m_bodies[i];
-        // 		body->m_sweep.c = m_positions[i].c;
-        // 		body->m_sweep.a = m_positions[i].a;
-        // 		body->m_linearVelocity = m_velocities[i].v;
-        // 		body->m_angularVelocity = m_velocities[i].w;
-        // 		body->SynchronizeTransform();
-        // 	}
+                if (body.flags & BodyFlags::AWAKE) == BodyFlags::AWAKE
+                    && body.time_of_sleep > 0.0
+                {
+                    body.time_of_sleep = 0.0;
+                }
 
-        // 	profile->solvePosition = timer.GetMilliseconds();
+                if (body.flags & BodyFlags::AWAKE) == BodyFlags::AWAKE
+                    && (body.linear_velocity.dot(body.linear_velocity)
+                        > lin_tol_sqr
+                        || body.angular_velocity * body.angular_velocity
+                            > ang_tol_sqr)
+                {
+                    body.time_of_sleep = 0.0;
+                    min_sleep_time = 0.0;
+                } else {
+                    body.time_of_sleep += step.dt;
+                    min_sleep_time = min_sleep_time.min(body.time_of_sleep);
+                }
+            }
 
-        // 	Report(contactSolver.m_velocityConstraints);
-
-        // 	if (allowSleep)
-        // 	{
-        // 		float minSleepTime = b2_maxFloat;
-
-        // 		const float linTolSqr = b2_linearSleepTolerance * b2_linearSleepTolerance;
-        // 		const float angTolSqr = b2_angularSleepTolerance * b2_angularSleepTolerance;
-
-        // 		for (int32 i = 0; i < m_bodyCount; ++i)
-        // 		{
-        // 			b2Body* b = m_bodies[i];
-        // 			if (b->GetType() == b2_staticBody)
-        // 			{
-        // 				continue;
-        // 			}
-
-        // 			if ((b->m_flags & b2Body::e_autoSleepFlag) == 0 ||
-        // 				b->m_angularVelocity * b->m_angularVelocity > angTolSqr ||
-        // 				b2Dot(b->m_linearVelocity, b->m_linearVelocity) > linTolSqr)
-        // 			{
-        // 				b->m_sleepTime = 0.0f;
-        // 				minSleepTime = 0.0f;
-        // 			}
-        // 			else
-        // 			{
-        // 				b->m_sleepTime += h;
-        // 				minSleepTime = b2Min(minSleepTime, b->m_sleepTime);
-        // 			}
-        // 		}
-
-        // 		if (minSleepTime >= b2_timeToSleep && positionSolved)
-        // 		{
-        // 			for (int32 i = 0; i < m_bodyCount; ++i)
-        // 			{
-        // 				b2Body* b = m_bodies[i];
-        // 				b->SetAwake(false);
-        // 			}
-        // 		}
-        // 	}
+            if min_sleep_time >= TIME_TO_SLEEP {
+                for body in self.bodies.iter_mut() {
+                    body.set_awake(false);
+                }
+            }
+        }
     }
 }
